@@ -17,6 +17,9 @@
 .DS_Store
 Thumbs.db
 
+# Goreleaser
+/dist/
+
 # Test and coverage
 *.out
 coverage.html
