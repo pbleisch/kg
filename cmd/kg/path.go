@@ -66,5 +66,6 @@ return nil
 },
 }
 cmd.Flags().Bool("verbose", false, "show traversal depth and relation info")
+cmd.Flags().SetInterspersed(false)
 rootCmd.AddCommand(cmd)
 }
