@@ -1,0 +1,24 @@
+# Go build artifacts
+/kg
+*.exe
+
+# Knowledge graph cache (rebuilt from YAML source of truth)
+.kg/.cache/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test and coverage
+*.out
+coverage.html
+
+# Daemon socket
+.kg/*.sock

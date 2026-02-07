@@ -1,0 +1,39 @@
+# 0001 - Storage and Index
+
+Status: Proposed
+
+Date: 2026-02-01
+
+Authors: Paul
+
+Context
+-------
+The knowledge graph stores YAML source-of-truth on disk and an index for fast queries. This decision records index backend, index location, sync model, manifest format, and rebuild strategy.
+
+Decision
+--------
+Status: Decided
+
+Decision:
+- Index engine: Cayley + BoltDB
+- Index file path: .kg/.cache/cayley.bolt (gitignored)
+- Manifest path: .kg/.cache/manifest.json (gitignored)
+- Sync model: Hybrid — daemon (file-watch) keeps the index up-to-date for normal CLI usage; CLI falls back to lazy-on-read and may trigger `kg sync` when the index is stale.
+- Rebuild strategy: Provide `kg sync --rebuild` to rebuild the index from YAML sources; manifest checksums and mtimes are used to detect stale or corrupted indexes and trigger rebuilds.
+
+
+Alternatives Considered
+-----------------------
+- Cayley + BoltDB: Pros—graph semantics, existing integrations; Cons—added dependency and complexity
+- SQLite-based inverted index: Pros—simplicity and single binary; Cons—limited graph semantics
+- In-memory index with on-disk snapshots: Pros—fast, Cons—persistence complexity
+
+Consequences
+------------
+- Choice impacts performance, portability, and operational complexity.
+- Manifest design affects sync correctness and cache invalidation.
+
+Related Decisions
+-----------------
+- 0009-concurrency-and-git-integration.md
+- 0014-performance-and-scaling.md
