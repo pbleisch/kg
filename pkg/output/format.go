@@ -29,6 +29,8 @@ func NewFormatter(format Format) Formatter {
 		return &jsonFormatter{}
 	case FormatTOON:
 		return &toonFormatter{}
+	case FormatHuman:
+		return &humanFormatter{}
 	default:
 		return &toonFormatter{}
 	}
