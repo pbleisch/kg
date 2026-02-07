@@ -1,5 +1,6 @@
 # Go build artifacts
 /kg
+/bin/
 *.exe
 
 # Knowledge graph cache (rebuilt from YAML source of truth)
