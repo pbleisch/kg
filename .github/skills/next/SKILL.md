@@ -1,5 +1,5 @@
 ---
-name: beads-workflow
+name: next
 description: >
   Workflow for planning, tracking, and implementing work using beads (bd).
   Use this skill when starting a session, planning work, picking up tasks,
