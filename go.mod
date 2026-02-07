@@ -3,6 +3,7 @@ module github.com/pbleisch/kg
 go 1.25.3
 
 require (
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/spf13/cobra v1.10.2
 	go.etcd.io/bbolt v1.4.3
 	gopkg.in/yaml.v3 v3.0.1
