@@ -331,6 +331,59 @@ Example: ` + "`kg find person name~Ali --dir={{.KGDir}}`" + `
 
 {{range .Types}}- {{.}}
 {{end}}{{end}}
+## Extracting Facts from Text
+
+When given text (conversation, documents, notes), extract structured
+facts into the knowledge graph using this process:
+
+1. **Identify entities** — look for named people, projects, tools,
+   organizations, concepts, or topics that are worth remembering.
+2. **Match to schema types** — check ` + "`kg types`" + ` and ` + "`kg describe <Type>`" + `
+   to find the right type. If no type fits, note the gap but don't
+   force a bad fit.
+3. **Check for duplicates** — before creating, run
+   ` + "`kg find <Type> name~<term> --dir={{.KGDir}}`" + ` to see if the
+   entity already exists. Update existing entities with ` + "`kg set`" + `
+   rather than creating duplicates.
+4. **Extract relationships** — look for verbs and associations that map
+   to schema relations (e.g. "Alice works at Acme" → ` + "`kg link`" + `).
+5. **Prefer facts over opinions** — store things that are durable and
+   verifiable. Skip transient states, small talk, and subjective
+   judgments unless they reveal a preference or need.
+6. **Use stable IDs** — derive IDs from the entity name using
+   kebab-case (e.g. "Knowledge Graphs" → ` + "`knowledge-graphs`" + `).
+   Keep IDs short and predictable so lookups work without searching.
+
+### What to extract
+
+- **People** and their roles, affiliations, preferences
+- **Projects** and their purpose, status, relationships
+- **Technologies** and how they connect to projects or people
+- **Preferences** — "I like X", "we use Y", "avoid Z"
+- **Decisions** — choices made and why
+- **Facts** that provide context for future work
+
+### What to skip
+
+- Transient status ("I'm tired", "running late")
+- Obvious/generic knowledge ("Python is a language")
+- Anything already captured in the graph (check first)
+- Vague statements with no concrete entity or fact
+
+### Example
+
+Given: "Paul mentioned he's been using Cayley for the graph index
+and really likes how BoltDB handles storage."
+
+Extract:
+` + "```" + `bash
+kg find topic name~Cayley --dir={{.KGDir}}   # check if exists
+kg create topic cayley name=Cayley category=technology --dir={{.KGDir}}
+kg create topic boltdb name=BoltDB category=technology --dir={{.KGDir}}
+kg link person:paul likes topic:cayley --dir={{.KGDir}}
+kg link person:paul likes topic:boltdb --dir={{.KGDir}}
+` + "```" + `
+
 ## Health Check
 
 Run ` + "`kg agent check --dir={{.KGDir}}`" + ` to verify graph health before operations.
