@@ -20,7 +20,7 @@ func init() {
 
 			dirs := []string{
 				filepath.Join(cfg.kgDir, "entities"),
-				filepath.Join(cfg.kgDir, "schemas"),
+				filepath.Join(cfg.kgDir, "schema"),
 				filepath.Join(cfg.kgDir, ".cache"),
 			}
 			for _, d := range dirs {
@@ -29,7 +29,7 @@ func init() {
 				}
 			}
 
-			configContent := "# kg knowledge graph configuration\n# Entity YAML files are stored in entities/<type>/<id>.yaml\n# Schema files are stored in schemas/<type>.yaml\n"
+			configContent := "# kg knowledge graph configuration\n# Entity YAML files are stored in entities/<type>/<id>.yaml\n# Schema files are stored in schema/<type>.yaml\n"
 			if err := os.WriteFile(configPath, []byte(configContent), 0o644); err != nil {
 				return fmt.Errorf("writing config.yaml: %w", err)
 			}

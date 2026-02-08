@@ -57,7 +57,7 @@ func TestInit(t *testing.T) {
 	}
 
 	// Verify directory structure.
-	for _, sub := range []string{"entities", "schemas", ".cache"} {
+	for _, sub := range []string{"entities", "schema", ".cache"} {
 		info, err := os.Stat(filepath.Join(dir, sub))
 		if err != nil {
 			t.Errorf("expected %s directory: %v", sub, err)
