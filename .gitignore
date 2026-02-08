@@ -6,6 +6,9 @@
 # Knowledge graph cache (rebuilt from YAML source of truth)
 .kg/.cache/
 
+# Local dev binary
+.kg/bin/
+
 # IDE / editor
 .vscode/
 .idea/
