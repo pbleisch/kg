@@ -20,12 +20,18 @@ jobs:
 
       - name: Install Ladybug native libs (macOS)
         run: |
-          # Placeholder: install or fetch macOS-compatible Ladybug libs
-          curl -sL https://raw.githubusercontent.com/LadybugDB/go-ladybug/refs/heads/master/download_lbug.sh | bash -s -- -out lib-ladybug || true
+          set -e
+          echo "Fetching Ladybug native libraries..."
+          curl -sL https://raw.githubusercontent.com/LadybugDB/go-ladybug/refs/heads/master/download_lbug.sh -o download_lbug.sh
+          chmod +x download_lbug.sh
+          ./download_lbug.sh -out lib-ladybug -platform darwin || true
+          ls -la lib-ladybug || true
 
       - name: Set CGO env (macOS)
         run: |
-          echo "CGO_LDFLAGS=-L$(pwd)/lib-ladybug -Wl,-rpath,$(pwd)/lib-ladybug" >> $GITHUB_ENV
+          # Use @loader_path for macOS runtime rpath so the binary finds bundled libs
+          echo "CGO_LDFLAGS=-L$(pwd)/lib-ladybug -Wl,-rpath,@loader_path/lib-ladybug" >> $GITHUB_ENV
+          echo "CGO_CFLAGS=-I$(pwd)/lib-ladybug/include" >> $GITHUB_ENV
           echo "CGO_ENABLED=1" >> $GITHUB_ENV
 
       - name: Build macOS kg-ladybug
