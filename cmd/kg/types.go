@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -23,9 +24,19 @@ func init() {
 				names = append(names, name)
 			}
 			sort.Strings(names)
+			jsonOut, _ := cmd.Flags().GetBool("json")
+			if jsonOut {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				if err := enc.Encode(names); err != nil {
+					return fmt.Errorf("encoding json: %w", err)
+				}
+				return nil
+			}
 			fmt.Printf("types[%d]: %s\n", len(names), strings.Join(names, ","))
 			return nil
 		},
 	}
+	cmd.Flags().Bool("json", false, "Output JSON array of type names")
 	rootCmd.AddCommand(cmd)
 }
