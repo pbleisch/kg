@@ -1,6 +1,6 @@
 # 0023 — kg watch Event Stream
 
-Status: Proposed
+Status: Decided
 
 Date: 2026-02-22
 

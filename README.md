@@ -65,6 +65,7 @@ Two variants are available:
 | `kg validate` | Validate entities against schemas |
 | `kg sync` | Sync YAML to the index |
 | `kg daemon start\|stop\|status` | Background index watcher |
+| `kg watch` | Stream entity/relation change events |
 | `kg morph` | Define and use reusable path patterns |
 | `kg mcp serve` | Start MCP server (stdio) |
 | `kg agent status\|schema\|skill\|examples\|mcp-config\|check` | Agent integration tools |
@@ -78,6 +79,21 @@ fewer tokens than JSON, ideal for AI agents. Alternatives:
 kg get person:alice --json    # JSON
 kg get person:alice --human   # Human-readable
 ```
+
+## Watching for Changes
+
+`kg watch` streams entity and relation change events as NDJSON:
+
+```bash
+kg watch                             # human-readable (TTY) or NDJSON (piped)
+kg watch --json                      # force NDJSON output
+kg watch --json --snapshot           # emit all entities first, then stream
+kg watch --json --type Game,Mechanic # filter by entity type
+kg watch --json --debounce 100ms     # coalesce rapid changes
+kg watch --daemon                    # subscribe to running kg daemon
+```
+
+Events: `init`, `created`, `updated`, `deleted`, `linked`, `unlinked`.
 
 ## Storage Model
 
