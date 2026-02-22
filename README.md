@@ -174,6 +174,8 @@ Recommended: use goreleaser which will build binaries and generate a changelog u
 goreleaser release --rm-dist
 ```
 
+This project publishes two related artifacts per release: a default pure-Go `kg` binary (no CGO, small and portable) and an optional `kg-ladybug` binary that is linked against the native LadybugDB libraries to enable the Ladybug index backend. CI is configured to build both artifacts within a single goreleaser pipeline so releases are produced together while still delivering two separate binaries for users to choose from. Shipping two artifacts keeps the default binary lightweight and maximizes portability for most users, while the Ladybug-enabled variant provides richer query capabilities for users who need it; see "Building with LadybugDB" below for runtime dependencies and build targets.
+
 Manual changelog generation (if not using goreleaser):
 
 ```bash
