@@ -1,8 +1,12 @@
 package command
 
 import (
+	"errors"
 	"fmt"
+	"os"
+	"strings"
 
+	"github.com/pbleisch/kg/pkg/schema"
 	"github.com/pbleisch/kg/pkg/store"
 )
 
@@ -17,7 +21,29 @@ func Set(kgDir, id string, attrs map[string]string) (*store.Entity, error) {
 	if e.Attributes == nil {
 		e.Attributes = make(map[string]any, len(attrs))
 	}
+
+	// Attempt to load a schema for the entity's type so we can parse values.
+	var s *schema.Schema
+	parts := strings.SplitN(id, ":", 2)
+	if len(parts) == 2 {
+		typeName := parts[0]
+		s, err = schema.LoadSchema(kgDir, typeName)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("loading schema: %w", err)
+		}
+	}
+
 	for k, v := range attrs {
+		if s != nil {
+			if def, ok := s.Attributes[k]; ok {
+				pv, perr := parseAttrValue(def.Type, v)
+				if perr != nil {
+					return nil, fmt.Errorf("attribute %s: %w", k, perr)
+				}
+				e.Attributes[k] = pv
+				continue
+			}
+		}
 		e.Attributes[k] = v
 	}
 

@@ -134,3 +134,44 @@ func TestParseAttrs(t *testing.T) {
 		})
 	}
 }
+
+// New test: ensure numeric attributes are parsed according to schema.
+func TestCreateNumericAttribute(t *testing.T) {
+	kgDir := setupKGDir(t)
+	// create schema directory and file
+	if err := os.MkdirAll(filepath.Join(kgDir, "schema"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	schemaYAML := `type: Source
+attributes:
+  year:
+    type: number
+    required: false
+`
+	if err := os.WriteFile(filepath.Join(kgDir, "schema", "source.yaml"), []byte(schemaYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	e, err := Create(kgDir, "Source", "myid", map[string]string{"year": "2004"})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	y := e.Attributes["year"]
+	switch v := y.(type) {
+	case int:
+		if v != 2004 {
+			t.Errorf("year = %v, want %v", v, 2004)
+		}
+	case int64:
+		if v != int64(2004) {
+			t.Errorf("year = %v, want %v", v, 2004)
+		}
+	case float64:
+		if v != 2004.0 {
+			t.Errorf("year = %v, want %v", v, 2004.0)
+		}
+	default:
+		t.Errorf("year has type %T value %v, want numeric", v, y)
+	}
+}
