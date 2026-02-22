@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
 
+	"github.com/pbleisch/kg/pkg/schema"
 	"github.com/pbleisch/kg/pkg/store"
 )
 
@@ -54,6 +56,30 @@ func Find(kgDir, typeName string, filters []Filter) ([]*store.Entity, error) {
 	ids, err := idx.FindByType(typeName)
 	if err != nil {
 		return nil, fmt.Errorf("finding type %s: %w", typeName, err)
+	}
+
+	// If no entities found, attempt case-insensitive resolution using schemas.
+	if len(ids) == 0 {
+		if schemas, serr := schema.LoadAllSchemas(kgDir); serr == nil {
+			for name := range schemas {
+				if strings.EqualFold(name, typeName) && name != typeName {
+					if ids2, err2 := idx.FindByType(name); err2 == nil && len(ids2) > 0 {
+						ids = ids2
+						break
+					}
+				}
+			}
+		}
+	}
+
+	// Fallback: try pascal-casing the provided type name.
+	if len(ids) == 0 {
+		p := pascalCase(typeName)
+		if p != "" && p != typeName {
+			if ids2, err2 := idx.FindByType(p); err2 == nil && len(ids2) > 0 {
+				ids = ids2
+			}
+		}
 	}
 
 	var results []*store.Entity
@@ -117,4 +143,14 @@ func compareNumeric(attrStr, op, filterVal string) bool {
 		return a <= b
 	}
 	return false
+}
+
+// pascalCase capitalises the first rune of s.
+func pascalCase(s string) string {
+	if s == "" {
+		return s
+	}
+	r := []rune(s)
+	r[0] = unicode.ToUpper(r[0])
+	return string(r)
 }
