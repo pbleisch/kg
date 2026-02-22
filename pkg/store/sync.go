@@ -186,10 +186,14 @@ func Sync(kgDir string) error {
 
 // Rebuild clears the index and manifest, then re-indexes all YAML entities.
 func Rebuild(kgDir string) error {
-	// Remove old index file.
-	dbPath := filepath.Join(kgDir, ".cache", "cayley.bolt")
-	if err := os.Remove(dbPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("removing old index: %w", err)
+	// Remove old index files for both backends.
+	boltPath := filepath.Join(kgDir, ".cache", "cayley.bolt")
+	if err := os.Remove(boltPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing bolt index: %w", err)
+	}
+	ladybugDir := filepath.Join(kgDir, ".cache", "ladybug")
+	if err := os.RemoveAll(ladybugDir); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing ladybug index: %w", err)
 	}
 
 	idx, err := OpenIndex(kgDir)

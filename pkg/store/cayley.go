@@ -26,8 +26,26 @@ type boltIndex struct {
 }
 
 // OpenIndex opens or creates an index at <kgDir>/.cache/. Returns an Indexer
-// backed by BoltDB.
+// backed by the configured backend. Selection order:
+//  1. Read .kg/config.yaml "backend" field (bolt, ladybug, or auto)
+//  2. If "auto" (default): prefer ladybug if compiled in, else bolt
+//  3. If explicit: use that backend or error if unavailable
 func OpenIndex(kgDir string) (Indexer, error) {
+	backend := readBackendConfig(kgDir)
+	switch backend {
+	case "ladybug":
+		return openLadybug(kgDir)
+	case "bolt":
+		return openBolt(kgDir)
+	default: // "auto" or empty
+		if ladybugAvailable {
+			return openLadybug(kgDir)
+		}
+		return openBolt(kgDir)
+	}
+}
+
+func openBolt(kgDir string) (Indexer, error) {
 	cacheDir := filepath.Join(kgDir, ".cache")
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating cache dir: %w", err)
