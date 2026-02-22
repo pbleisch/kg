@@ -159,6 +159,38 @@ make cover       # test coverage report
 make local       # build and copy to .kg/bin/kg-<os>
 ```
 
+## Releasing
+
+Releases are produced with goreleaser (recommended) or can be done manually. Before releasing, make sure the working tree is clean and checks pass:
+
+```bash
+make check
+git pull --rebase
+```
+
+Recommended: use goreleaser which will build binaries and generate a changelog using the project's .goreleaser.yaml (it contains changelog.filters.exclude, e.g. `^docs:`, `^chore:`, `^test:`, `^bd sync:` to avoid including beads sync commits in generated notes):
+
+```bash
+goreleaser release --rm-dist
+```
+
+Manual changelog generation (if not using goreleaser):
+
+```bash
+# choose the previous tag, then list commits up to HEAD excluding internal prefixes
+prev=$(git describe --tags --abbrev=0 $(git rev-list --tags --max-count=1)^)
+# generate notes while filtering out docs/chore/test and bd sync commits
+git log --no-merges --pretty=format:'- %s (%h)' "$prev..HEAD" | grep -Ev '^(docs:|chore:|test:|bd sync:)' > docs/release-notes/vX.Y.Z.md
+# publish the release with GH CLI
+gh release create vX.Y.Z -F docs/release-notes/vX.Y.Z.md
+```
+
+Notes on good release notes:
+
+- Focus on user-visible changes: features, breaking changes, bug fixes, and upgrade guidance.
+- Exclude internal workflow noise (beads/bd sync commits) — the goreleaser config already filters `^bd sync:`; when generating notes manually, use the grep filter above.
+- Keep entries short and link to PRs or issues when helpful.
+
 ### Building with LadybugDB
 
 ```bash
