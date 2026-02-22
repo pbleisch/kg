@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/pbleisch/kg/pkg/output"
 	"github.com/pbleisch/kg/pkg/store"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
