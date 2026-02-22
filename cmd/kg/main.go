@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"strings"
 
 	"github.com/pbleisch/kg/pkg/output"
 	"github.com/spf13/cobra"
@@ -40,6 +41,20 @@ func init() {
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
-		os.Exit(1)
+		// Map validation errors to a distinct exit code; otherwise treat as internal error.
+		exitCode := 1
+		errCode := "internal_error"
+		if strings.Contains(err.Error(), "validation failed") {
+			exitCode = 2
+			errCode = "validation_error"
+		}
+
+		if cfg.format == output.FormatJSON {
+			f := output.NewFormatter(cfg.format)
+			_ = f.FormatError(os.Stderr, errCode, err.Error(), nil)
+		} else {
+			rootCmd.PrintErrln(err.Error())
+		}
+		os.Exit(exitCode)
 	}
 }
