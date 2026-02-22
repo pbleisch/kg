@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/pbleisch/kg/pkg/command"
 	"github.com/pbleisch/kg/pkg/output"
 	"github.com/pbleisch/kg/pkg/store"
 	"github.com/spf13/cobra"
@@ -115,7 +116,112 @@ func init() {
 				return nil
 			}
 
-			return fmt.Errorf("apply execution not implemented yet; use --dry-run to simulate")
+			// Execute actions sequentially.
+			for _, a := range m.Actions {
+				switch strings.ToLower(a.Action) {
+				case "create":
+					if a.Entity == nil || a.Entity.ID == "" {
+						return fmt.Errorf("create action missing entity or id")
+					}
+					// Check existence.
+					if _, err := store.ReadEntity(cfg.kgDir, a.Entity.ID); err == nil {
+						// exists
+						switch onConflict {
+						case "fail":
+							return fmt.Errorf("entity %q already exists", a.Entity.ID)
+						case "skip":
+							continue
+						case "merge":
+							// Merge attributes/relations into existing entity.
+							existing, err := store.ReadEntity(cfg.kgDir, a.Entity.ID)
+							if err != nil {
+								return fmt.Errorf("reading existing entity %q: %w", a.Entity.ID, err)
+							}
+							if existing.Attributes == nil {
+								existing.Attributes = make(map[string]any)
+							}
+							for k, v := range a.Entity.Attributes {
+								existing.Attributes[k] = v
+							}
+							for rel, targets := range a.Entity.Relations {
+								if existing.Relations == nil {
+									existing.Relations = make(map[string][]string)
+								}
+								for _, t := range targets {
+									found := false
+									for _, ex := range existing.Relations[rel] {
+										if ex == t {
+											found = true
+											break
+										}
+									}
+									if !found {
+										existing.Relations[rel] = append(existing.Relations[rel], t)
+									}
+								}
+							}
+							if err := store.WriteEntity(cfg.kgDir, existing); err != nil {
+								return fmt.Errorf("writing merged entity %q: %w", a.Entity.ID, err)
+							}
+							if err := store.Sync(cfg.kgDir); err != nil {
+								return fmt.Errorf("syncing index: %w", err)
+							}
+							continue
+						}
+					}
+					// Not exists: write entity directly.
+					if err := store.WriteEntity(cfg.kgDir, a.Entity); err != nil {
+						return fmt.Errorf("creating entity %q: %w", a.Entity.ID, err)
+					}
+					if err := store.Sync(cfg.kgDir); err != nil {
+						return fmt.Errorf("syncing index: %w", err)
+					}
+				case "set":
+					if a.Target == "" {
+						return fmt.Errorf("set action missing target id")
+					}
+					e, err := store.ReadEntity(cfg.kgDir, a.Target)
+					if err != nil {
+						return fmt.Errorf("reading target %q: %w", a.Target, err)
+					}
+					if e.Attributes == nil {
+						e.Attributes = make(map[string]any)
+					}
+					for k, v := range a.Attributes {
+						e.Attributes[k] = v
+					}
+					if err := store.WriteEntity(cfg.kgDir, e); err != nil {
+						return fmt.Errorf("writing target %q: %w", a.Target, err)
+					}
+					if err := store.Sync(cfg.kgDir); err != nil {
+						return fmt.Errorf("syncing index: %w", err)
+					}
+				case "delete":
+					if a.Target == "" {
+						return fmt.Errorf("delete action missing target id")
+					}
+					if err := command.Delete(cfg.kgDir, a.Target); err != nil {
+						return fmt.Errorf("deleting %q: %w", a.Target, err)
+					}
+				case "link":
+					if a.From == "" || a.Rel == "" || a.To == "" {
+						return fmt.Errorf("link action missing from/rel/to")
+					}
+					if err := command.Link(cfg.kgDir, a.From, a.Rel, a.To); err != nil {
+						return fmt.Errorf("link %s->%s (%s): %w", a.From, a.To, a.Rel, err)
+					}
+				case "unlink":
+					if a.From == "" || a.Rel == "" || a.To == "" {
+						return fmt.Errorf("unlink action missing from/rel/to")
+					}
+					if err := command.Unlink(cfg.kgDir, a.From, a.Rel, a.To); err != nil {
+						return fmt.Errorf("unlink %s->%s (%s): %w", a.From, a.To, a.Rel, err)
+					}
+				default:
+					return fmt.Errorf("unknown action %q", a.Action)
+				}
+			}
+			return nil
 		},
 	}
 	cmd.Flags().Bool("dry-run", false, "Simulate the manifest without applying changes")
