@@ -57,3 +57,4 @@ changelog:
       - "^docs:"
       - "^chore:"
       - "^test:"
+      - "^bd sync:"
