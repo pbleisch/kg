@@ -57,6 +57,14 @@ func init() {
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
 			onConflict, _ := cmd.Flags().GetString("on-conflict")
 
+			// Validate on-conflict flag.
+			switch onConflict {
+			case "fail", "skip", "merge":
+				// ok
+			default:
+				return fmt.Errorf("invalid on-conflict value: %s", onConflict)
+			}
+
 			// Build summary.
 			summary := map[string]interface{}{
 				"version":       m.Version,
