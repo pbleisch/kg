@@ -18,6 +18,14 @@ jobs:
         with:
           go-version: '1.25'
 
+      - name: Install MSYS2 + mingw toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: |
+            mingw-w64-x86_64-toolchain
+
       - name: Install Ladybug native libs (Windows)
         shell: bash
         run: |
@@ -38,9 +46,13 @@ jobs:
           echo "PATH=$(pwd)/lib-ladybug:$PATH" >> $GITHUB_ENV
 
       - name: Build Windows kg-ladybug
-        shell: powershell
+        shell: bash -lc
         run: |
-          go build -tags=ladybug -o bin/kg-ladybug-windows-amd64.exe ./cmd/kg
+          set -e
+          # Ensure mingw GCC is used
+          export CC=x86_64-w64-mingw32-gcc || true
+          echo "Using CC=$CC"
+          CC=${CC} go build -tags=ladybug -o bin/kg-ladybug-windows-amd64.exe ./cmd/kg
 
       - name: Archive artifact
         uses: actions/upload-artifact@v4
