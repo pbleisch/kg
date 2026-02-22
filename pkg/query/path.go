@@ -101,7 +101,7 @@ func PathVerbose(kgDir string, startID string, steps []PathStep) ([]PathResult, 
 }
 
 // relTargets returns the relation targets for a single entity and relation name.
-func relTargets(idx *store.Index, id, relation string) ([]string, error) {
+func relTargets(idx store.Indexer, id, relation string) ([]string, error) {
 	e, err := idx.GetEntity(id)
 	if err != nil {
 		return nil, nil // entity not found — no targets
@@ -111,7 +111,7 @@ func relTargets(idx *store.Index, id, relation string) ([]string, error) {
 
 // walkOneHop collects all relation targets for every ID in current,
 // returning a deduplicated slice.
-func walkOneHop(idx *store.Index, current []string, relation string) ([]string, error) {
+func walkOneHop(idx store.Indexer, current []string, relation string) ([]string, error) {
 	seen := make(map[string]struct{})
 	for _, id := range current {
 		targets, err := relTargets(idx, id, relation)
@@ -127,7 +127,7 @@ func walkOneHop(idx *store.Index, current []string, relation string) ([]string, 
 
 // walkRecursive follows the relation transitively using BFS until no new IDs
 // are found. Tracks visited IDs to handle cycles.
-func walkRecursive(idx *store.Index, seeds []string, relation string) ([]string, error) {
+func walkRecursive(idx store.Indexer, seeds []string, relation string) ([]string, error) {
 	visited := make(map[string]struct{})
 	queue := make([]string, len(seeds))
 	copy(queue, seeds)
@@ -158,7 +158,7 @@ func walkRecursive(idx *store.Index, seeds []string, relation string) ([]string,
 }
 
 // walkRecursiveVerbose is like walkRecursive but appends PathResult entries.
-func walkRecursiveVerbose(idx *store.Index, seeds []string, relation string, baseDepth int, results []PathResult) ([]string, []PathResult, error) {
+func walkRecursiveVerbose(idx store.Indexer, seeds []string, relation string, baseDepth int, results []PathResult) ([]string, []PathResult, error) {
 	type item struct {
 		id    string
 		depth int

@@ -20,13 +20,14 @@ var (
 
 const sep = "\x00"
 
-// Index wraps a BoltDB store providing quad-like graph index operations.
-type Index struct {
+// boltIndex wraps a BoltDB store providing quad-like graph index operations.
+type boltIndex struct {
 	db *bolt.DB
 }
 
-// OpenIndex opens or creates a BoltDB-backed index at <kgDir>/.cache/cayley.bolt.
-func OpenIndex(kgDir string) (*Index, error) {
+// OpenIndex opens or creates an index at <kgDir>/.cache/. Returns an Indexer
+// backed by BoltDB.
+func OpenIndex(kgDir string) (Indexer, error) {
 	cacheDir := filepath.Join(kgDir, ".cache")
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating cache dir: %w", err)
@@ -51,11 +52,11 @@ func OpenIndex(kgDir string) (*Index, error) {
 		return nil, fmt.Errorf("init buckets: %w", err)
 	}
 
-	return &Index{db: db}, nil
+	return &boltIndex{db: db}, nil
 }
 
 // Close closes the underlying BoltDB store.
-func (idx *Index) Close() error {
+func (idx *boltIndex) Close() error {
 	return idx.db.Close()
 }
 
@@ -66,7 +67,7 @@ func opsKey(o, p, s string) []byte { return []byte(o + sep + p + sep + s) }
 //   - (id, "type", typeName)
 //   - (id, "attr:<name>", jsonValue) for each attribute
 //   - (id, "rel:<name>", targetID) for each relation target
-func (idx *Index) AddEntity(e *Entity) error {
+func (idx *boltIndex) AddEntity(e *Entity) error {
 	type triple struct{ s, p, o string }
 	var triples []triple
 
@@ -103,7 +104,7 @@ func (idx *Index) AddEntity(e *Entity) error {
 }
 
 // RemoveEntity removes all quads with the given subject ID.
-func (idx *Index) RemoveEntity(id string) error {
+func (idx *boltIndex) RemoveEntity(id string) error {
 	prefix := []byte(id + sep)
 	return idx.db.Update(func(tx *bolt.Tx) error {
 		spo := tx.Bucket(bucketSPO)
@@ -132,7 +133,7 @@ func (idx *Index) RemoveEntity(id string) error {
 }
 
 // GetEntity reconstructs an entity from its stored quads.
-func (idx *Index) GetEntity(id string) (*Entity, error) {
+func (idx *boltIndex) GetEntity(id string) (*Entity, error) {
 	e := &Entity{
 		ID:         id,
 		Attributes: make(map[string]any),
@@ -179,7 +180,7 @@ func (idx *Index) GetEntity(id string) (*Entity, error) {
 }
 
 // FindByType returns IDs of entities with the given type.
-func (idx *Index) FindByType(typeName string) ([]string, error) {
+func (idx *boltIndex) FindByType(typeName string) ([]string, error) {
 	// Look up the reverse index: object=typeName, predicate="type"
 	target := []byte(typeName + sep + "type" + sep)
 
