@@ -19,23 +19,23 @@ jobs:
           go-version: '1.25'
 
       - name: Install Ladybug native libs (Windows)
-        shell: powershell
+        shell: bash
         run: |
-          Write-Host "Fetching Ladybug native libraries..."
-          Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/LadybugDB/go-ladybug/refs/heads/master/download_lbug.ps1' -OutFile download_lbug.ps1 -UseBasicParsing
-          if (Test-Path ./download_lbug.ps1) { .\download_lbug.ps1 -OutDir lib-ladybug -Platform windows } else { Write-Host "download_lbug.ps1 not found, continuing..." }
-          Get-ChildItem -Recurse lib-ladybug | Write-Host
+          set -e
+          echo "Fetching Ladybug native libraries (using bash)..."
+          curl -sL https://raw.githubusercontent.com/LadybugDB/go-ladybug/refs/heads/master/download_lbug.sh -o download_lbug.sh
+          chmod +x download_lbug.sh
+          ./download_lbug.sh -out lib-ladybug -platform windows || true
+          ls -la lib-ladybug || true
 
       - name: Set CGO env (Windows)
-        shell: powershell
+        shell: bash
         run: |
-          # Set linker and include paths for Windows builds
-          Add-Content -Path $env:GITHUB_ENV -Value "CGO_LDFLAGS=-L$(pwd)/lib-ladybug"
-          Add-Content -Path $env:GITHUB_ENV -Value "CGO_CFLAGS=-I$(pwd)/lib-ladybug/include"
-          Add-Content -Path $env:GITHUB_ENV -Value "CGO_ENABLED=1"
-          # Prepend lib folder to PATH so the linker/runtime can find DLLs
-          $newPath = "$(pwd)\lib-ladybug;" + $env:PATH
-          Add-Content -Path $env:GITHUB_ENV -Value "PATH=$newPath"
+          # Use Unix-style paths for the build step under bash on Windows runners
+          echo "CGO_LDFLAGS=-L$(pwd)/lib-ladybug" >> $GITHUB_ENV
+          echo "CGO_CFLAGS=-I$(pwd)/lib-ladybug/include" >> $GITHUB_ENV
+          echo "CGO_ENABLED=1" >> $GITHUB_ENV
+          echo "PATH=$(pwd)/lib-ladybug:$PATH" >> $GITHUB_ENV
 
       - name: Build Windows kg-ladybug
         shell: powershell
