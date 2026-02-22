@@ -1,4 +1,4 @@
-.PHONY: build test test-race lint install clean check cover local
+.PHONY: build test test-race lint install clean check cover local build-ladybug test-ladybug local-ladybug check-ladybug
 
 GO       ?= go
 GOFLAGS  ?=
@@ -36,3 +36,16 @@ check: lint test ## Run lint then test (CI convenience)
 cover: ## Run tests with coverage and generate coverage.html
 	$(GO) test ./... -count=1 -coverprofile=coverage.out
 	$(GO) tool cover -html=coverage.out -o coverage.html
+
+build-ladybug: ## Build kg with ladybug tag
+	$(GO) build $(GOFLAGS) -tags ladybug -o $(BIN_DIR)/$(BINARY)-ladybug $(CMD_PKG)
+
+test-ladybug: ## Run tests with ladybug tag
+	$(GO) test -tags ladybug ./... -count=1
+
+local-ladybug: build-ladybug ## Copy ladybug binary to .kg/bin for local testing
+	@mkdir -p .kg/bin
+	cp $(BIN_DIR)/$(BINARY)-ladybug .kg/bin/kg-ladybug-$(GOOS)
+	@echo "Installed to .kg/bin/kg-ladybug-$(GOOS)"
+
+check-ladybug: lint test-ladybug ## Run lint then test with ladybug tag

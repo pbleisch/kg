@@ -40,6 +40,12 @@ Download the latest binary from
 [Releases](https://github.com/pbleisch/kg/releases) (Linux and macOS,
 amd64 and arm64).
 
+Two variants are available:
+
+- **`kg`** — Pure Go, no external dependencies (default)
+- **`kg-ladybug`** — Includes [LadybugDB](https://ladybugdb.com) graph
+  index backend for richer query capabilities (requires CGO)
+
 ## Commands
 
 | Command | Description |
@@ -77,11 +83,23 @@ kg get person:alice --human   # Human-readable
 
 - **Source of truth:** YAML files in `.kg/entities/<type>/<id>.yaml`
 - **Schemas:** YAML files in `.kg/schema/<type>.yaml`
-- **Index:** BoltDB cache in `.kg/.cache/` (gitignored, rebuilt with `kg sync`)
+- **Index:** BoltDB or LadybugDB cache in `.kg/.cache/` (gitignored, rebuilt with `kg sync`)
 - **Config:** `.kg/config.yaml`
 
 The YAML files are designed to be committed to Git. The index is a local
 cache that accelerates queries.
+
+### Index Backend
+
+The index backend can be configured in `.kg/config.yaml`:
+
+```yaml
+backend: auto  # auto (default), bolt, or ladybug
+```
+
+- **auto** — Uses LadybugDB if compiled in, otherwise BoltDB
+- **bolt** — BoltDB (pure Go, always available)
+- **ladybug** — LadybugDB (requires the `kg-ladybug` binary)
 
 ## Agent Integration
 
@@ -125,14 +143,22 @@ make cover       # test coverage report
 make local       # build and copy to .kg/bin/kg-<os>
 ```
 
+### Building with LadybugDB
+
+```bash
+make build-ladybug   # compile to bin/kg-ladybug (requires CGO + native libs)
+make test-ladybug    # run tests with ladybug backend
+make check-ladybug   # lint + test with ladybug
+```
+
 Requires Go 1.25+.
 
 ## Architecture Decisions
 
 Design decisions are recorded in `decisions/` as lightweight ADRs. Key
 decisions include storage and indexing (0001), data model (0002), CLI
-grammar (0004), MCP server (0007), daemon (0008), and agent integration
-(0021).
+grammar (0004), MCP server (0007), daemon (0008), agent integration
+(0021), and LadybugDB index backend (0022).
 
 ## License
 

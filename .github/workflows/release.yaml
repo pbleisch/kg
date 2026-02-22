@@ -20,6 +20,15 @@ jobs:
         with:
           go-version: '1.25'
 
+      - name: Download LadybugDB libraries
+        run: |
+          curl -sL https://raw.githubusercontent.com/LadybugDB/go-ladybug/refs/heads/master/download_lbug.sh | bash -s -- -out lib-ladybug
+        continue-on-error: true
+
+      - name: Set CGO environment
+        run: |
+          echo "CGO_LDFLAGS=-L$(pwd)/lib-ladybug -Wl,-rpath,$(pwd)/lib-ladybug" >> $GITHUB_ENV
+
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: '~> v2'

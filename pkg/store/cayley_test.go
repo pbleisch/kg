@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func tempIndex(t *testing.T) *Index {
+func tempIndex(t *testing.T) Indexer {
 	t.Helper()
 	dir := t.TempDir()
 	idx, err := OpenIndex(dir)

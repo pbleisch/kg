@@ -75,6 +75,7 @@ func agentStatusCmd() *cobra.Command {
 
 			// Index freshness.
 			status.IndexStatus = indexFreshness(cfg.kgDir)
+			status.Backend = store.ActiveBackend(cfg.kgDir)
 
 			// Daemon status.
 			status.DaemonStatus = daemonRunning(absDir)
@@ -86,6 +87,7 @@ func agentStatusCmd() *cobra.Command {
 
 type agentStatus struct {
 	Dir            string         `json:"dir"`
+	Backend        string         `json:"backend"`
 	EntityCount    int            `json:"entity_count"`
 	EntitiesByType map[string]int `json:"entities_by_type,omitempty"`
 	SchemaTypes    []string       `json:"schema_types,omitempty"`
@@ -95,6 +97,7 @@ type agentStatus struct {
 
 func (s agentStatus) toTOON(w io.Writer) {
 	fmt.Fprintf(w, "dir: %s\n", s.Dir)
+	fmt.Fprintf(w, "backend: %s\n", s.Backend)
 	fmt.Fprintf(w, "entity_count: %d\n", s.EntityCount)
 	if len(s.EntitiesByType) > 0 {
 		types := make([]string, 0, len(s.EntitiesByType))
@@ -595,6 +598,7 @@ func agentCheckCmd() *cobra.Command {
 
 			result := checkResult{
 				Healthy:  len(problems) == 0,
+				Backend:  store.ActiveBackend(cfg.kgDir),
 				Problems: problems,
 			}
 
@@ -612,11 +616,13 @@ func agentCheckCmd() *cobra.Command {
 
 type checkResult struct {
 	Healthy  bool     `json:"healthy"`
+	Backend  string   `json:"backend"`
 	Problems []string `json:"problems,omitempty"`
 }
 
 func (r checkResult) toTOON(w io.Writer) {
 	fmt.Fprintf(w, "healthy: %v\n", r.Healthy)
+	fmt.Fprintf(w, "backend: %s\n", r.Backend)
 	if len(r.Problems) > 0 {
 		fmt.Fprintf(w, "problems[%d]:\n", len(r.Problems))
 		for _, p := range r.Problems {

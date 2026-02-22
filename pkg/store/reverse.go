@@ -8,7 +8,7 @@ import (
 
 // FindByRelationTarget returns entity IDs that point to targetID via the given
 // relation. It scans the OPS bucket with prefix "targetID\x00rel:<relation>\x00".
-func (idx *Index) FindByRelationTarget(relation, targetID string) ([]string, error) {
+func (idx *boltIndex) FindByRelationTarget(relation, targetID string) ([]string, error) {
 	prefix := []byte(targetID + sep + "rel:" + relation + sep)
 
 	var ids []string

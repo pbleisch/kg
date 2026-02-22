@@ -29,7 +29,7 @@ func init() {
 				}
 			}
 
-			configContent := "# kg knowledge graph configuration\n# Entity YAML files are stored in entities/<type>/<id>.yaml\n# Schema files are stored in schema/<type>.yaml\n"
+			configContent := "# kg knowledge graph configuration\n# Entity YAML files are stored in entities/<type>/<id>.yaml\n# Schema files are stored in schema/<type>.yaml\n\n# Index backend: auto, bolt, or ladybug\nbackend: auto\n"
 			if err := os.WriteFile(configPath, []byte(configContent), 0o644); err != nil {
 				return fmt.Errorf("writing config.yaml: %w", err)
 			}
