@@ -7,7 +7,8 @@ before:
     - go test ./... -count=1
 
 builds:
-  - main: ./cmd/kg/
+  - id: kg
+    main: ./cmd/kg/
     binary: kg
     env:
       - CGO_ENABLED=0
@@ -20,9 +21,32 @@ builds:
     ldflags:
       - -s -w
 
+  - id: kg-ladybug
+    main: ./cmd/kg/
+    binary: kg-ladybug
+    tags:
+      - ladybug
+    env:
+      - CGO_ENABLED=1
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+
 archives:
-  - format: tar.gz
+  - id: default
+    builds: [kg]
+    format: tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+  - id: ladybug
+    builds: [kg-ladybug]
+    format: tar.gz
+    name_template: "{{ .ProjectName }}-ladybug_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
 checksum:
   name_template: checksums.txt
