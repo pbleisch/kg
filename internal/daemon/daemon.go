@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/pbleisch/kg/internal/watch"
 	"github.com/pbleisch/kg/pkg/store"
 )
 
@@ -23,6 +25,11 @@ type Daemon struct {
 	watcher    *fsnotify.Watcher
 	done       chan struct{}
 	wg         sync.WaitGroup
+
+	// Subscriber management for watch event streaming.
+	subMu       sync.Mutex
+	subscribers map[net.Conn]struct{}
+	entityCache map[string]*store.Entity
 }
 
 // SocketPathFor returns the Unix socket path for the given kgDir.
@@ -88,11 +95,20 @@ func Start(kgDir string) (*Daemon, error) {
 	}
 
 	d := &Daemon{
-		kgDir:      absDir,
-		socketPath: sockPath,
-		listener:   ln,
-		watcher:    watcher,
-		done:       make(chan struct{}),
+		kgDir:       absDir,
+		socketPath:  sockPath,
+		listener:    ln,
+		watcher:     watcher,
+		done:        make(chan struct{}),
+		subscribers: make(map[net.Conn]struct{}),
+		entityCache: make(map[string]*store.Entity),
+	}
+
+	// Pre-populate entity cache for diffing.
+	if entities, err := store.ListEntities(absDir); err == nil {
+		for _, e := range entities {
+			d.entityCache[e.ID] = e
+		}
 	}
 
 	d.wg.Add(2)
@@ -108,6 +124,13 @@ func (d *Daemon) Stop() error {
 	d.listener.Close()
 	d.watcher.Close()
 	d.wg.Wait()
+	// Close all subscriber connections.
+	d.subMu.Lock()
+	for conn := range d.subscribers {
+		conn.Close()
+	}
+	d.subscribers = nil
+	d.subMu.Unlock()
 	os.Remove(d.socketPath)
 	removePID(d.kgDir)
 	return nil
@@ -132,8 +155,7 @@ func (d *Daemon) watchLoop() {
 			if !ok {
 				return
 			}
-			// Watch new subdirectories and trigger sync (files may
-			// already exist in the new directory).
+			// Watch new subdirectories.
 			if event.Has(fsnotify.Create) {
 				if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
 					d.watcher.Add(event.Name)
@@ -141,7 +163,7 @@ func (d *Daemon) watchLoop() {
 						timer.Stop()
 					}
 					timer = time.AfterFunc(debounceDelay, func() {
-						store.Sync(d.kgDir) //nolint:errcheck
+						d.syncAndBroadcast()
 					})
 					continue
 				}
@@ -149,12 +171,11 @@ func (d *Daemon) watchLoop() {
 			if !isYAML(event.Name) {
 				continue
 			}
-			// Debounce: reset timer on each event.
 			if timer != nil {
 				timer.Stop()
 			}
 			timer = time.AfterFunc(debounceDelay, func() {
-				store.Sync(d.kgDir) //nolint:errcheck
+				d.syncAndBroadcast()
 			})
 		case _, ok := <-d.watcher.Errors:
 			if !ok {
@@ -181,21 +202,108 @@ func (d *Daemon) acceptLoop() {
 }
 
 func (d *Daemon) handleConn(conn net.Conn) {
-	defer conn.Close()
 	buf := make([]byte, 256)
 	n, err := conn.Read(buf)
 	if err != nil {
+		conn.Close()
 		return
 	}
 	cmd := string(buf[:n])
 	switch cmd {
 	case "stop":
 		conn.Write([]byte("stopping"))
+		conn.Close()
 		go d.Stop()
 	case "status":
 		conn.Write([]byte("running"))
+		conn.Close()
+	case "subscribe":
+		d.addSubscriber(conn)
+		// Connection stays open; will be cleaned up on write failure or Stop.
 	default:
 		conn.Write([]byte("unknown command"))
+		conn.Close()
+	}
+}
+
+func (d *Daemon) addSubscriber(conn net.Conn) {
+	d.subMu.Lock()
+	d.subscribers[conn] = struct{}{}
+	d.subMu.Unlock()
+}
+
+func (d *Daemon) removeSubscriber(conn net.Conn) {
+	d.subMu.Lock()
+	delete(d.subscribers, conn)
+	d.subMu.Unlock()
+	conn.Close()
+}
+
+func (d *Daemon) broadcast(events []watch.Event) {
+	d.subMu.Lock()
+	subs := make([]net.Conn, 0, len(d.subscribers))
+	for conn := range d.subscribers {
+		subs = append(subs, conn)
+	}
+	d.subMu.Unlock()
+
+	for _, conn := range subs {
+		for _, ev := range events {
+			data, err := json.Marshal(ev)
+			if err != nil {
+				continue
+			}
+			data = append(data, '\n')
+			if _, err := conn.Write(data); err != nil {
+				d.removeSubscriber(conn)
+				break
+			}
+		}
+	}
+}
+
+func (d *Daemon) syncAndBroadcast() {
+	// Read current entities.
+	newEntities, err := store.ListEntities(d.kgDir)
+	if err != nil {
+		store.Sync(d.kgDir) //nolint:errcheck
+		return
+	}
+
+	ts := watch.Now()
+	newMap := make(map[string]*store.Entity, len(newEntities))
+	for _, e := range newEntities {
+		newMap[e.ID] = e
+	}
+
+	var events []watch.Event
+
+	// Detect updates and deletions.
+	for id, old := range d.entityCache {
+		new, exists := newMap[id]
+		if !exists {
+			events = append(events, watch.Diff(old, nil, ts)...)
+		} else {
+			events = append(events, watch.Diff(old, new, ts)...)
+		}
+	}
+
+	// Detect creations.
+	for id, new := range newMap {
+		if _, exists := d.entityCache[id]; !exists {
+			events = append(events, watch.Diff(nil, new, ts)...)
+		}
+	}
+
+	// Update cache.
+	d.entityCache = newMap
+
+	// Sync index.
+	store.Sync(d.kgDir) //nolint:errcheck
+
+	// Broadcast to subscribers.
+	if len(events) > 0 {
+		d.broadcast(events)
 	}
 }
 
