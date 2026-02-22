@@ -31,6 +31,8 @@ builds:
       - CGO_ENABLED=1
     goos:
       - linux
+      - darwin
+      - windows
     goarch:
       - amd64
     ldflags:

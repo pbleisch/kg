@@ -1,0 +1,39 @@
+name: Release macOS Ladybug build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos-ladybug:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Install Ladybug native libs (macOS)
+        run: |
+          # Placeholder: install or fetch macOS-compatible Ladybug libs
+          curl -sL https://raw.githubusercontent.com/LadybugDB/go-ladybug/refs/heads/master/download_lbug.sh | bash -s -- -out lib-ladybug || true
+
+      - name: Set CGO env (macOS)
+        run: |
+          echo "CGO_LDFLAGS=-L$(pwd)/lib-ladybug -Wl,-rpath,$(pwd)/lib-ladybug" >> $GITHUB_ENV
+          echo "CGO_ENABLED=1" >> $GITHUB_ENV
+
+      - name: Build macOS kg-ladybug
+        run: |
+          go build -tags=ladybug -o bin/kg-ladybug-darwin-amd64 ./cmd/kg
+
+      - name: Archive artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kg-ladybug-darwin-amd64
+          path: bin/kg-ladybug-darwin-amd64

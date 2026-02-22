@@ -20,14 +20,29 @@ jobs:
         with:
           go-version: '1.25'
 
-      - name: Download LadybugDB libraries
+      - name: Download LadybugDB libraries (Linux)
         run: |
-          curl -sL https://raw.githubusercontent.com/LadybugDB/go-ladybug/refs/heads/master/download_lbug.sh | bash -s -- -out lib-ladybug
+          curl -sL https://raw.githubusercontent.com/LadybugDB/go-ladybug/refs/heads/master/download_lbug.sh | bash -s -- -out lib-ladybug || true
         continue-on-error: true
 
-      - name: Set CGO environment
+      - name: Set CGO environment (Linux)
+        if: runner.os == 'Linux'
         run: |
           echo "CGO_LDFLAGS=-L$(pwd)/lib-ladybug -Wl,-rpath,$(pwd)/lib-ladybug" >> $GITHUB_ENV
+
+      - name: Start macOS kg-ladybug build (dispatched)
+        if: github.repository == 'pbleisch/kg'
+        uses: peter-evans/workflow-dispatch@v1
+        with:
+          workflow: 'release-macos-ladybug.yaml'
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Start Windows kg-ladybug build (dispatched)
+        if: github.repository == 'pbleisch/kg'
+        uses: peter-evans/workflow-dispatch@v1
+        with:
+          workflow: 'release-windows-ladybug.yaml'
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: goreleaser/goreleaser-action@v6
         with:
