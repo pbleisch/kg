@@ -49,7 +49,7 @@ jobs:
           export CGO_ENABLED=1
           export PATH="$(pwd)/lib-ladybug:$PATH"
           # Run go build with mingw CC
-          ${CC} go build -tags=ladybug -o bin/kg-ladybug-windows-amd64.exe ./cmd/kg
+          go build -tags=ladybug -o bin/kg-ladybug-windows-amd64.exe ./cmd/kg
 
       - name: Archive artifact
         uses: actions/upload-artifact@v4
