@@ -34,12 +34,19 @@ jobs:
           echo "CGO_CFLAGS=-I$(pwd)/lib-ladybug/include" >> $GITHUB_ENV
           echo "CGO_ENABLED=1" >> $GITHUB_ENV
 
-      - name: Build macOS kg-ladybug
+      - name: Build macOS kg-ladybug (multi-arch)
         run: |
-          go build -tags=ladybug -o bin/kg-ladybug-darwin-amd64 ./cmd/kg
+          set -e
+          for arch in amd64 arm64; do
+            echo "Building darwin/$arch"
+            # Build with CGO enabled and macOS rpath set earlier
+            GOOS=darwin GOARCH=$arch CGO_ENABLED=1 go build -tags=ladybug -o bin/kg-ladybug-darwin-${arch} ./cmd/kg
+          done
 
-      - name: Archive artifact
+      - name: Archive artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: kg-ladybug-darwin-amd64
-          path: bin/kg-ladybug-darwin-amd64
+          name: kg-ladybug-darwin
+          path: |
+            bin/kg-ladybug-darwin-amd64
+            bin/kg-ladybug-darwin-arm64
