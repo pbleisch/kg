@@ -32,17 +32,31 @@ jobs:
 
       - name: Start macOS kg-ladybug build (dispatched)
         if: github.repository == 'pbleisch/kg'
-        uses: peter-evans/workflow-dispatch@v1
+        uses: actions/github-script@v7
         with:
-          workflow: 'release-macos-ladybug.yaml'
-          token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'release-macos-ladybug.yaml',
+              ref: process.env.GITHUB_REF || context.ref
+            })
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Start Windows kg-ladybug build (dispatched)
         if: github.repository == 'pbleisch/kg'
-        uses: peter-evans/workflow-dispatch@v1
+        uses: actions/github-script@v7
         with:
-          workflow: 'release-windows-ladybug.yaml'
-          token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'release-windows-ladybug.yaml',
+              ref: process.env.GITHUB_REF || context.ref
+            })
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: goreleaser/goreleaser-action@v6
         with:
