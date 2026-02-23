@@ -36,23 +36,20 @@ jobs:
           ./download_lbug.sh -out lib-ladybug -platform windows || true
           ls -la lib-ladybug || true
 
-      - name: Set CGO env (Windows)
-        shell: bash
-        run: |
-          # Use Unix-style paths for the build step under bash on Windows runners
-          echo "CGO_LDFLAGS=-L$(pwd)/lib-ladybug" >> $GITHUB_ENV
-          echo "CGO_CFLAGS=-I$(pwd)/lib-ladybug/include" >> $GITHUB_ENV
-          echo "CGO_ENABLED=1" >> $GITHUB_ENV
-          echo "PATH=$(pwd)/lib-ladybug:$PATH" >> $GITHUB_ENV
-
-      - name: Build Windows kg-ladybug
+      - name: Build Windows kg-ladybug (MSYS2 + build)
         shell: bash
         run: |
           set -e
-          # Ensure mingw GCC is used
-          export CC=x86_64-w64-mingw32-gcc || true
+          # Ensure mingw GCC is available from MSYS2
+          export CC=x86_64-w64-mingw32-gcc
           echo "Using CC=$CC"
-          ${CC:-x86_64-w64-mingw32-gcc} go build -tags=ladybug -o bin/kg-ladybug-windows-amd64.exe ./cmd/kg
+          # Set CGO flags for linker/include
+          export CGO_LDFLAGS="-L$(pwd)/lib-ladybug"
+          export CGO_CFLAGS="-I$(pwd)/lib-ladybug/include"
+          export CGO_ENABLED=1
+          export PATH="$(pwd)/lib-ladybug:$PATH"
+          # Run go build with mingw CC
+          ${CC} go build -tags=ladybug -o bin/kg-ladybug-windows-amd64.exe ./cmd/kg
 
       - name: Archive artifact
         uses: actions/upload-artifact@v4
