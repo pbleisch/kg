@@ -1,7 +1,7 @@
 name: Release macOS Ladybug build
 
 on:
-  workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: write

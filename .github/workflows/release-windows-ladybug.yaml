@@ -1,7 +1,7 @@
 name: Release Windows Ladybug build
 
 on:
-  workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: write
