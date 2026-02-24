@@ -141,6 +141,24 @@ jobs:
     needs: [build-linux, build-macos, build-windows]
     runs-on: ubuntu-latest
     steps:
+      - name: Download built artifacts from build jobs
+        uses: actions/download-artifact@v4
+        with:
+          name: kg-ladybug-linux-amd64
+          path: artifacts/kg-linux
+
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: kg-ladybug-darwin
+          path: artifacts/kg-macos
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: kg-ladybug-windows-amd64
+          path: artifacts/kg-windows
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -151,3 +169,24 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attach platform artifacts to the GitHub release
+        env:
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          echo "Uploading artifacts to release $TAG"
+          # Linux
+          if [ -f artifacts/kg-linux/bin/kg-ladybug-linux-amd64 ]; then
+            gh release upload "$TAG" artifacts/kg-linux/bin/kg-ladybug-linux-amd64 --repo "$REPO" --clobber || true
+          fi
+          # macOS (may contain multiple files)
+          if [ -d artifacts/kg-macos ]; then
+            for f in artifacts/kg-macos/*; do
+              gh release upload "$TAG" "$f" --repo "$REPO" --clobber || true
+            done
+          fi
+          # Windows
+          if [ -f artifacts/kg-windows/bin/kg-ladybug-windows-amd64.exe ]; then
+            gh release upload "$TAG" artifacts/kg-windows/bin/kg-ladybug-windows-amd64.exe --repo "$REPO" --clobber || true
+          fi
