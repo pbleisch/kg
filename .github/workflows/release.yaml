@@ -160,8 +160,7 @@ jobs:
           path: artifacts/kg-windows
 
       - name: Debug: list downloaded artifacts
-        run: |
-          echo "Contents of artifacts dir:" && ls -R artifacts || true
+        run: echo "Contents of artifacts dir:" && ls -R artifacts || true
 
       - uses: actions/checkout@v4
         with:
