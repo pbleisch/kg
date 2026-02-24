@@ -174,23 +174,43 @@ jobs:
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
 
-      - name: Attach platform artifacts to the GitHub release
+      - name: Get release upload URL
+        id: get_release
         env:
           REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
-          echo "Uploading artifacts to release $TAG"
-          # Linux
-          if [ -f artifacts/kg-linux/bin/kg-ladybug-linux-amd64 ]; then
-            gh release upload "$TAG" artifacts/kg-linux/bin/kg-ladybug-linux-amd64 --repo "$REPO" --clobber || true
-          fi
-          # macOS (may contain multiple files)
-          if [ -d artifacts/kg-macos ]; then
-            for f in artifacts/kg-macos/*; do
-              gh release upload "$TAG" "$f" --repo "$REPO" --clobber || true
-            done
-          fi
-          # Windows
-          if [ -f artifacts/kg-windows/bin/kg-ladybug-windows-amd64.exe ]; then
-            gh release upload "$TAG" artifacts/kg-windows/bin/kg-ladybug-windows-amd64.exe --repo "$REPO" --clobber || true
-          fi
+          upload_url=$(gh release view "$TAG" --repo "$REPO" --json uploadUrl -q .uploadUrl)
+          echo "upload_url=$upload_url" >> $GITHUB_OUTPUT
+
+      - name: Upload Linux kg-ladybug
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.get_release.outputs.upload_url }}
+          asset_path: artifacts/kg-linux/bin/kg-ladybug-linux-amd64
+          asset_name: kg-ladybug-linux-amd64
+          asset_content_type: application/octet-stream
+
+      - name: Upload macOS kg-ladybug (amd64)
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.get_release.outputs.upload_url }}
+          asset_path: artifacts/kg-macos/bin/kg-ladybug-darwin-amd64
+          asset_name: kg-ladybug-darwin-amd64
+          asset_content_type: application/octet-stream
+
+      - name: Upload macOS kg-ladybug (arm64)
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.get_release.outputs.upload_url }}
+          asset_path: artifacts/kg-macos/bin/kg-ladybug-darwin-arm64
+          asset_name: kg-ladybug-darwin-arm64
+          asset_content_type: application/octet-stream
+
+      - name: Upload Windows kg-ladybug
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.get_release.outputs.upload_url }}
+          asset_path: artifacts/kg-windows/bin/kg-ladybug-windows-amd64.exe
+          asset_name: kg-ladybug-windows-amd64.exe
+          asset_content_type: application/octet-stream
