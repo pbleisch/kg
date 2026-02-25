@@ -145,6 +145,27 @@ jobs:
         with:
           fetch-depth: 0
 
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: '~> v2'
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Authenticate gh CLI
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+
+      - name: Get release upload URL
+        id: get_release
+        env:
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          upload_url=$(gh release view "$TAG" --repo "$REPO" --json uploadUrl -q .uploadUrl)
+          echo "upload_url=$upload_url" >> $GITHUB_OUTPUT
+
       - name: Download built artifacts from build jobs
         uses: actions/download-artifact@v4
         with:
@@ -167,26 +188,6 @@ jobs:
         run: |
           echo "Contents of artifacts dir:"
           ls -R artifacts || true
-
-      - uses: goreleaser/goreleaser-action@v6
-        with:
-          version: '~> v2'
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Authenticate gh CLI
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
-
-      - name: Get release upload URL
-        id: get_release
-        env:
-          REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          upload_url=$(gh release view "$TAG" --repo "$REPO" --json uploadUrl -q .uploadUrl)
-          echo "upload_url=$upload_url" >> $GITHUB_OUTPUT
 
       - name: Upload Linux kg-ladybug
         uses: actions/upload-release-asset@v1
