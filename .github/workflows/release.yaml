@@ -4,14 +4,16 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  build-linux:
-    name: Build Linux kg-ladybug
+  # =============================================================
+  # GoReleaser: non-CGO kg builds + creates the GitHub Release
+  # =============================================================
+  goreleaser:
+    name: Release (GoReleaser)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,79 +24,96 @@ jobs:
         with:
           go-version: '1.25'
 
-      - name: Download LadybugDB libraries (Linux)
-        run: |
-          curl -sL https://raw.githubusercontent.com/LadybugDB/go-ladybug/refs/heads/master/download_lbug.sh | bash -s -- -out lib-ladybug || true
-        continue-on-error: true
-
-      - name: Set CGO environment (Linux)
-        run: |
-          echo "CGO_LDFLAGS=-L$(pwd)/lib-ladybug -Wl,-rpath,$(pwd)/lib-ladybug" >> $GITHUB_ENV
-          echo "CGO_CFLAGS=-I$(pwd)/lib-ladybug/include" >> $GITHUB_ENV
-          echo "CGO_ENABLED=1" >> $GITHUB_ENV
-
-      - name: Build Linux kg-ladybug
-        run: |
-          mkdir -p bin
-          GOOS=linux GOARCH=amd64 CGO_ENABLED=1 go build -tags=ladybug -o bin/kg-ladybug-linux-amd64 ./cmd/kg
-
-      - name: Archive artifact
-        uses: actions/upload-artifact@v4
+      - uses: goreleaser/goreleaser-action@v6
         with:
-          name: kg-ladybug-linux-amd64
-          path: bin/kg-ladybug-linux-amd64
+          version: '~> v2'
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  build-macos:
-    name: Build macOS kg-ladybug
-    runs-on: macos-latest
+  # =============================================================
+  # CGO Ladybug builds on native runners
+  # =============================================================
+  ladybug-linux:
+    name: Ladybug (Linux amd64)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
 
-      - name: Install Ladybug native libs (macOS)
+      - name: Download Ladybug native libs
         run: |
-          set -e
-          echo "Fetching Ladybug native libraries..."
-          curl -sL https://raw.githubusercontent.com/LadybugDB/go-ladybug/refs/heads/master/download_lbug.sh -o download_lbug.sh
-          chmod +x download_lbug.sh
-          ./download_lbug.sh -out lib-ladybug -platform darwin || true
-          ls -la lib-ladybug || true
+          curl -sL https://raw.githubusercontent.com/LadybugDB/go-ladybug/refs/heads/master/download_lbug.sh \
+            | bash -s -- -out lib-ladybug
 
-      - name: Set CGO env (macOS)
+      - name: Build
+        env:
+          CGO_ENABLED: '1'
+          CGO_LDFLAGS: -L${{ github.workspace }}/lib-ladybug -Wl,-rpath,$ORIGIN/lib-ladybug
+          CGO_CFLAGS: -I${{ github.workspace }}/lib-ladybug/include
         run: |
-          echo "CGO_LDFLAGS=-L$(pwd)/lib-ladybug -Wl,-rpath,@loader_path/lib-ladybug" >> $GITHUB_ENV
-          echo "CGO_CFLAGS=-I$(pwd)/lib-ladybug/include" >> $GITHUB_ENV
-          echo "CGO_ENABLED=1" >> $GITHUB_ENV
-
-      - name: Build macOS kg-ladybug (multi-arch)
-        run: |
-          set -e
           mkdir -p bin
-          for arch in amd64 arm64; do
-            echo "Building darwin/$arch"
-            GOOS=darwin GOARCH=$arch CGO_ENABLED=1 go build -tags=ladybug -o bin/kg-ladybug-darwin-${arch} ./cmd/kg
-          done
+          go build -tags=ladybug -o bin/kg-ladybug-linux-amd64 ./cmd/kg
 
-      - name: Archive artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kg-ladybug-linux-amd64
+          path: bin/kg-ladybug-linux-amd64
+
+  ladybug-macos:
+    name: Ladybug (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Download Ladybug native libs
+        run: |
+          curl -sL https://raw.githubusercontent.com/LadybugDB/go-ladybug/refs/heads/master/download_lbug.sh \
+            -o download_lbug.sh
+          chmod +x download_lbug.sh
+          ./download_lbug.sh -out lib-ladybug -platform darwin
+
+      - name: Build arm64 (native)
+        env:
+          CGO_ENABLED: '1'
+          GOARCH: arm64
+          CGO_LDFLAGS: -L${{ github.workspace }}/lib-ladybug -Wl,-rpath,@loader_path/lib-ladybug
+          CGO_CFLAGS: -I${{ github.workspace }}/lib-ladybug/include
+        run: |
+          mkdir -p bin
+          go build -tags=ladybug -o bin/kg-ladybug-darwin-arm64 ./cmd/kg
+
+      # NOTE: amd64 CGO cross-compilation from arm64 macOS requires
+      # that the Ladybug native libs ship a universal or x86_64 dylib.
+      # If this fails, use a macos-13 (x86_64) runner instead.
+      - name: Build amd64 (cross)
+        env:
+          CGO_ENABLED: '1'
+          GOARCH: amd64
+          CGO_LDFLAGS: -L${{ github.workspace }}/lib-ladybug -Wl,-rpath,@loader_path/lib-ladybug
+          CGO_CFLAGS: -I${{ github.workspace }}/lib-ladybug/include
+        run: |
+          go build -tags=ladybug -o bin/kg-ladybug-darwin-amd64 ./cmd/kg
+
+      - uses: actions/upload-artifact@v4
         with:
           name: kg-ladybug-darwin
           path: |
-            bin/kg-ladybug-darwin-amd64
             bin/kg-ladybug-darwin-arm64
+            bin/kg-ladybug-darwin-amd64
 
-  build-windows:
-    name: Build Windows kg-ladybug
+  ladybug-windows:
+    name: Ladybug (Windows amd64)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
@@ -105,118 +124,66 @@ jobs:
         with:
           msystem: MINGW64
           update: true
-          install: |
-            mingw-w64-x86_64-toolchain
+          install: mingw-w64-x86_64-toolchain
 
-      - name: Install Ladybug native libs (Windows)
+      - name: Download Ladybug native libs
         shell: bash
         run: |
-          set -e
-          echo "Fetching Ladybug native libraries (using bash)..."
-          curl -sL https://raw.githubusercontent.com/LadybugDB/go-ladybug/refs/heads/master/download_lbug.sh -o download_lbug.sh
+          curl -sL https://raw.githubusercontent.com/LadybugDB/go-ladybug/refs/heads/master/download_lbug.sh \
+            -o download_lbug.sh
           chmod +x download_lbug.sh
-          ./download_lbug.sh -out lib-ladybug -platform windows || true
-          ls -la lib-ladybug || true
+          ./download_lbug.sh -out lib-ladybug -platform windows
 
-      - name: Build Windows kg-ladybug (MSYS2 + build)
+      - name: Build
         shell: bash
+        env:
+          CC: x86_64-w64-mingw32-gcc
+          CGO_ENABLED: '1'
         run: |
-          set -e
-          export CC=x86_64-w64-mingw32-gcc
-          echo "Using CC=$CC"
           export CGO_LDFLAGS="-L$(pwd)/lib-ladybug"
           export CGO_CFLAGS="-I$(pwd)/lib-ladybug/include"
-          export CGO_ENABLED=1
           export PATH="$(pwd)/lib-ladybug:$PATH"
+          mkdir -p bin
           go build -tags=ladybug -o bin/kg-ladybug-windows-amd64.exe ./cmd/kg
 
-      - name: Archive artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: kg-ladybug-windows-amd64
           path: bin/kg-ladybug-windows-amd64.exe
 
-  publish:
-    name: Publish Release (goreleaser)
-    needs: [build-linux, build-macos, build-windows]
+  # =============================================================
+  # Attach ladybug binaries to the GoReleaser-created release
+  # =============================================================
+  attach-ladybug:
+    name: Attach Ladybug to Release
+    needs: [goreleaser, ladybug-linux, ladybug-macos, ladybug-windows]
     runs-on: ubuntu-latest
-    container:
-      image: goreleaser/goreleaser-cross:v1.22
     steps:
-      - uses: actions/checkout@v4
+      - name: Download all ladybug artifacts
+        uses: actions/download-artifact@v4
         with:
-          fetch-depth: 0
+          pattern: kg-ladybug-*
+          path: artifacts/
+          merge-multiple: true
 
+      - name: List artifacts
+        run: ls -lR artifacts/
 
-      - name: Run GoReleaser (cross)
-        run: goreleaser release --clean
+      - name: Generate checksums for ladybug binaries
+        run: |
+          cd artifacts
+          sha256sum * > kg-ladybug-checksums.txt
+          cat kg-ladybug-checksums.txt
+
+      - name: Upload to GitHub Release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Authenticate gh CLI
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
-
-      - name: Get release upload URL
-        id: get_release
-        env:
-          REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          upload_url=$(gh release view "$TAG" --repo "$REPO" --json uploadUrl -q .uploadUrl)
-          echo "upload_url=$upload_url" >> $GITHUB_OUTPUT
-
-      - name: Download built artifacts from build jobs
-        uses: actions/download-artifact@v4
-        with:
-          name: kg-ladybug-linux-amd64
-          path: artifacts/kg-linux
-
-      - name: Download macOS artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: kg-ladybug-darwin
-          path: artifacts/kg-macos
-
-      - name: Download Windows artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: kg-ladybug-windows-amd64
-          path: artifacts/kg-windows
-
-      - name: "Debug: list downloaded artifacts"
-        run: |
-          echo "Contents of artifacts dir:"
-          ls -R artifacts || true
-
-      - name: Upload Linux kg-ladybug
-        uses: actions/upload-release-asset@v1
-        with:
-          upload_url: ${{ steps.get_release.outputs.upload_url }}
-          asset_path: artifacts/kg-linux/kg-ladybug-linux-amd64
-          asset_name: kg-ladybug-linux-amd64
-          asset_content_type: application/octet-stream
-
-      - name: Upload macOS kg-ladybug (amd64)
-        uses: actions/upload-release-asset@v1
-        with:
-          upload_url: ${{ steps.get_release.outputs.upload_url }}
-          asset_path: artifacts/kg-macos/kg-ladybug-darwin-amd64
-          asset_name: kg-ladybug-darwin-amd64
-          asset_content_type: application/octet-stream
-
-      - name: Upload macOS kg-ladybug (arm64)
-        uses: actions/upload-release-asset@v1
-        with:
-          upload_url: ${{ steps.get_release.outputs.upload_url }}
-          asset_path: artifacts/kg-macos/kg-ladybug-darwin-arm64
-          asset_name: kg-ladybug-darwin-arm64
-          asset_content_type: application/octet-stream
-
-      - name: Upload Windows kg-ladybug
-        uses: actions/upload-release-asset@v1
-        with:
-          upload_url: ${{ steps.get_release.outputs.upload_url }}
-          asset_path: artifacts/kg-windows/kg-ladybug-windows-amd64.exe
-          asset_name: kg-ladybug-windows-amd64.exe
-          asset_content_type: application/octet-stream
+          gh release upload "${{ github.ref_name }}" \
+            artifacts/kg-ladybug-linux-amd64 \
+            artifacts/kg-ladybug-darwin-arm64 \
+            artifacts/kg-ladybug-darwin-amd64 \
+            artifacts/kg-ladybug-windows-amd64.exe \
+            artifacts/kg-ladybug-checksums.txt \
+            --clobber

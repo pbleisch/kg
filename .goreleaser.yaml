@@ -1,3 +1,9 @@
+# .goreleaser.yaml
+#
+# This config handles ONLY the non-CGO "kg" builds.
+# The CGO "kg-ladybug" variants are built on native runners
+# and attached to the release separately (see release.yaml).
+
 version: 2
 project_name: kg
 
@@ -16,19 +22,21 @@ builds:
     goos:
       - linux
       - darwin
+      - windows
     goarch:
       - amd64
       - arm64
     ldflags:
       - -s -w
 
-
 archives:
   - id: default
     builds: [kg]
     format: tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-
+    format_overrides:
+      - goos: windows
+        format: zip
 
 checksum:
   name_template: checksums.txt
