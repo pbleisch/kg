@@ -192,7 +192,7 @@ jobs:
         uses: actions/upload-release-asset@v1
         with:
           upload_url: ${{ steps.get_release.outputs.upload_url }}
-          asset_path: artifacts/kg-linux/bin/kg-ladybug-linux-amd64
+          asset_path: artifacts/kg-linux/kg-ladybug-linux-amd64
           asset_name: kg-ladybug-linux-amd64
           asset_content_type: application/octet-stream
 
@@ -200,7 +200,7 @@ jobs:
         uses: actions/upload-release-asset@v1
         with:
           upload_url: ${{ steps.get_release.outputs.upload_url }}
-          asset_path: artifacts/kg-macos/bin/kg-ladybug-darwin-amd64
+          asset_path: artifacts/kg-macos/kg-ladybug-darwin-amd64
           asset_name: kg-ladybug-darwin-amd64
           asset_content_type: application/octet-stream
 
@@ -208,7 +208,7 @@ jobs:
         uses: actions/upload-release-asset@v1
         with:
           upload_url: ${{ steps.get_release.outputs.upload_url }}
-          asset_path: artifacts/kg-macos/bin/kg-ladybug-darwin-arm64
+          asset_path: artifacts/kg-macos/kg-ladybug-darwin-arm64
           asset_name: kg-ladybug-darwin-arm64
           asset_content_type: application/octet-stream
 
@@ -216,6 +216,6 @@ jobs:
         uses: actions/upload-release-asset@v1
         with:
           upload_url: ${{ steps.get_release.outputs.upload_url }}
-          asset_path: artifacts/kg-windows/bin/kg-ladybug-windows-amd64.exe
+          asset_path: artifacts/kg-windows/kg-ladybug-windows-amd64.exe
           asset_name: kg-ladybug-windows-amd64.exe
           asset_content_type: application/octet-stream
