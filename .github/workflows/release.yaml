@@ -141,6 +141,10 @@ jobs:
     needs: [build-linux, build-macos, build-windows]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download built artifacts from build jobs
         uses: actions/download-artifact@v4
         with:
@@ -163,10 +167,6 @@ jobs:
         run: |
           echo "Contents of artifacts dir:"
           ls -R artifacts || true
-
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - uses: goreleaser/goreleaser-action@v6
         with:
