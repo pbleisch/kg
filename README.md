@@ -203,6 +203,56 @@ make check-ladybug   # lint + test with ladybug
 
 Requires Go 1.25+.
 
+### Installing Ladybug native libraries
+
+The `kg-ladybug` binary links against native LadybugDB libraries. To build or run the Ladybug-enabled variant locally, fetch the project-provided downloader and install the native libraries for your platform (this mirrors CI behavior).
+
+Linux (recommended):
+
+```bash
+# install basic build tools if needed (Debian/Ubuntu example)
+sudo apt-get install -y build-essential curl gcc
+# download and extract native libs to ./lib-ladybug
+curl -sL https://raw.githubusercontent.com/LadybugDB/go-ladybug/refs/heads/master/download_lbug.sh | bash -s -- -out lib-ladybug
+# build using the downloaded libs
+CGO_ENABLED=1 CGO_LDFLAGS="-L$(pwd)/lib-ladybug" CGO_CFLAGS="-I$(pwd)/lib-ladybug/include" make build-ladybug
+```
+
+macOS:
+
+```bash
+# download helper and extract darwin libs
+curl -sL https://raw.githubusercontent.com/LadybugDB/go-ladybug/refs/heads/master/download_lbug.sh -o download_lbug.sh
+chmod +x download_lbug.sh
+./download_lbug.sh -out lib-ladybug -platform darwin
+# build (arm64 example)
+CGO_ENABLED=1 GOARCH=arm64 CGO_LDFLAGS="-L$(pwd)/lib-ladybug -Wl,-rpath,@loader_path/lib-ladybug" CGO_CFLAGS="-I$(pwd)/lib-ladybug/include" make build-ladybug
+```
+
+If cross-building on macOS (arm64 -> amd64) you may need universal or x86_64-native Ladybug libraries or to build on an x86_64 mac runner.
+
+Windows (MSYS2 / MinGW):
+
+```bash
+# Use MSYS2 MinGW64 shell (see https://www.msys2.org)
+# Download native windows libs
+curl -sL https://raw.githubusercontent.com/LadybugDB/go-ladybug/refs/heads/master/download_lbug.sh -o download_lbug.sh
+chmod +x download_lbug.sh
+./download_lbug.sh -out lib-ladybug -platform windows
+# In MSYS2 MinGW64 shell
+export CC=x86_64-w64-mingw32-gcc
+export CGO_ENABLED=1
+export CGO_LDFLAGS="-L$(pwd)/lib-ladybug"
+export CGO_CFLAGS="-I$(pwd)/lib-ladybug/include"
+export PATH="$(pwd)/lib-ladybug:$PATH"
+make build-ladybug
+```
+
+Notes:
+
+- The CI release workflow uses GoReleaser for non-CGO artifacts and separate GitHub Actions jobs to build and attach the CGO (ladybug) binaries; using the `download_lbug.sh` helper reproduces the CI layout locally.
+- If you encounter linker or cross-compile issues, building on a native runner for the target OS/arch (or matching the CI runner) usually resolves them.
+
 ## Architecture Decisions
 
 Design decisions are recorded in `decisions/` as lightweight ADRs. Key
