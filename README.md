@@ -205,84 +205,56 @@ Requires Go 1.25+.
 
 ### Installing Ladybug native libraries
 
-The `kg-ladybug` binary links against native LadybugDB libraries. Developers building locally should use the project downloader (below). Users who installed a prebuilt `kg-ladybug` release and see a runtime error like:
+The `kg-ladybug` binary links against native LadybugDB libraries. For canonical, supported installation options and packages, see the official Ladybug installation guide:
 
-  dyld: Library not loaded: @rpath/liblbug.dylib
+https://docs.ladybugdb.com/installation/
 
-should install the native runtime libraries on their machine so the dynamic linker can find liblbug.
+Below are the most popular, user-facing examples for each platform that resolve the common "Library not loaded: @rpath/liblbug.dylib" error and mirror what CI does when producing Ladybug-enabled artifacts.
 
-Developer build (fetch native libs):
-
-```bash
-# get the project-provided downloader and extract platform libs to ./lib-ladybug
-curl -sL https://raw.githubusercontent.com/LadybugDB/go-ladybug/refs/heads/master/download_lbug.sh -o download_lbug.sh
-chmod +x download_lbug.sh
-# replace -platform with linux|darwin|windows as appropriate
-./download_lbug.sh -out lib-ladybug -platform darwin
-```
-
-For end users (runtime installation) — preferred approaches by OS:
-
-macOS (user-facing fixes)
-
-Option A (recommended): install the dylib into a standard library path so dyld can find it:
+Linux (quick example)
 
 ```bash
-# assuming you've run the downloader above
-sudo mkdir -p /usr/local/lib
-sudo cp lib-ladybug/lib/dynamic/darwin/liblbug.dylib /usr/local/lib/
-sudo chmod 644 /usr/local/lib/liblbug.dylib
-# if you installed to Homebrew prefix (Apple Silicon):
-# sudo cp lib-ladybug/lib/dynamic/darwin/liblbug.dylib /opt/homebrew/lib/
-```
-
-Option B (works for packaged / single-binary installs): place the runtime next to the installed binary — the release binary looks in a few sibling locations (the uploader uses one of these in CI):
-
-```bash
-sudo mkdir -p /usr/local/bin/lib-ladybug
-sudo cp lib-ladybug/lib/dynamic/darwin/liblbug.dylib /usr/local/bin/lib-ladybug/
-```
-
-Verification and troubleshooting on macOS:
-
-```bash
-# show what the binary references
-otool -L /usr/local/bin/kg
-# clear quarantine if macOS blocks the file
-sudo xattr -r -d com.apple.quarantine /usr/local/bin/kg /usr/local/bin/lib-ladybug/liblbug.dylib || true
-# ad-hoc codesign if Gatekeeper prevents loading
-sudo codesign --force --sign - /usr/local/bin/kg /usr/local/bin/lib-ladybug/liblbug.dylib || true
-```
-
-Linux
-
-```bash
-# after running the downloader with -platform linux
+# download the official helper and extract linux libs to ./lib-ladybug
+curl -sL https://raw.githubusercontent.com/LadybugDB/go-ladybug/refs/heads/master/download_lbug.sh | bash -s -- -out lib-ladybug -platform linux
+# install runtime so the dynamic linker can find it
 sudo cp lib-ladybug/lib/dynamic/linux/liblbug.so /usr/local/lib/
 sudo chmod 644 /usr/local/lib/liblbug.so
 sudo ldconfig
-# or, for a single-user install, copy the .so next to the binary and run:
-# LD_LIBRARY_PATH=/path/to/lib-ladybug/lib/dynamic/linux /usr/local/bin/kg
 # verify
 ldd /usr/local/bin/kg | grep liblbug
 ```
 
-Windows
+macOS (quick example)
 
-```powershell
-# after running the downloader (or obtaining the windows dll)
-# place the DLL next to the kg executable or add its folder to PATH
-Copy-Item .\lib-ladybug\lib\dynamic\windows\liblbug.dll -Destination "C:\Program Files\kg\"
-# or next to kg.exe
-# then run kg.exe normally
+```bash
+# download helper and extract darwin libs
+curl -sL https://raw.githubusercontent.com/LadybugDB/go-ladybug/refs/heads/master/download_lbug.sh -o download_lbug.sh
+chmod +x download_lbug.sh
+./download_lbug.sh -out lib-ladybug -platform darwin
+# copy into a standard library path so dyld can find it
+sudo cp lib-ladybug/lib/dynamic/darwin/liblbug.dylib /usr/local/lib/
+sudo chmod 644 /usr/local/lib/liblbug.dylib
+# or, for a single-binary install, place the runtime next to the binary:
+# sudo mkdir -p /usr/local/bin/lib-ladybug
+# sudo cp lib-ladybug/lib/dynamic/darwin/liblbug.dylib /usr/local/bin/lib-ladybug/
 ```
 
-Notes and tips
+Windows (quick example)
 
-- The CI release attaches the Ladybug binaries and arranges their native libs so the uploaded artifacts are runnable on the target runner; reproducing the CI layout locally with the downloader above is the fastest way to resolve missing-library errors.
-- If you still get "Library not loaded: @rpath/liblbug.dylib", prefer Option A (install into /usr/local/lib or Homebrew lib) or Option B (place lib-ladybug next to the kg binary) above — both match paths the release binary will search.
-- If platform protections (Gatekeeper / codesign) block loading on macOS, removing quarantine attributes and ad-hoc codesigning (examples above) typically resolves it for local installs.
-- For support, include the full dyld or ldd output and the path where you placed liblbug in your issue so we can suggest the correct placement.
+```powershell
+# extract windows libs (use Git Bash / MSYS2 to run the helper)
+curl -sL https://raw.githubusercontent.com/LadybugDB/go-ladybug/refs/heads/master/download_lbug.sh -o download_lbug.sh
+./download_lbug.sh -out lib-ladybug -platform windows
+# place the DLL next to the executable or add its folder to PATH
+Copy-Item .\lib-ladybug\lib\dynamic\windows\liblbug.dll -Destination "C:\Program Files\kg\"
+# or next to kg.exe
+```
+
+Notes
+
+- These examples are quick fixes; prefer the Ladybug docs for production installation: https://docs.ladybugdb.com/installation/
+- If you still see "Library not loaded: @rpath/liblbug.dylib" on macOS, copy the dylib to /usr/local/lib or the Homebrew lib prefix, or place the lib-ladybug directory beside the binary; clear quarantine and ad-hoc codesign if Gatekeeper blocks loading.
+- When filing an issue, include the full dyld (macOS) or ldd (Linux) output and the location where you placed the native libs.
 
 ## Architecture Decisions
 
