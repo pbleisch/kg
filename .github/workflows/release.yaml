@@ -182,15 +182,14 @@ jobs:
           go build -tags=ladybug -o bin/kg-ladybug.exe ./cmd/kg
 
       - name: Package
-        shell: bash
-        env:
-          VERSION: ${{ github.ref_name }}
+        shell: pwsh
         run: |
-          mkdir -p staging
-          cp bin/kg-ladybug.exe staging/
+          New-Item -ItemType Directory -Force staging | Out-Null
+          Copy-Item bin\kg-ladybug.exe staging\
           # Windows finds DLLs in the same directory as the exe
-          cp lib-ladybug/*.dll staging/
-          cd staging && zip -r "../kg-ladybug_${VERSION}_windows_amd64.zip" .
+          Copy-Item lib-ladybug\*.dll staging\
+          $version = "${{ github.ref_name }}"
+          Compress-Archive -Path staging\* -DestinationPath "kg-ladybug_${version}_windows_amd64.zip"
 
       - uses: actions/upload-artifact@v4
         with:
