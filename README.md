@@ -91,13 +91,13 @@ make install        # installs to $GOPATH/bin
 **`kg-ladybug`** (requires CGO and a C compiler):
 
 ```bash
-make build-ladybug  # downloads native lib if needed, builds bin/kg-ladybug
-                    # also copies lib-ladybug/ next to the binary so it runs
+make install-ladybug  # downloads native lib if needed, builds, and installs
+                      # kg-ladybug + lib-ladybug/ to $GOPATH/bin/
 ```
 
 The native library is downloaded automatically on first build to
-`lib-ladybug/` and copied to `bin/lib-ladybug/` beside the binary.
-To pre-download without building: `make download-ladybug-libs`.
+`lib-ladybug/` and installed alongside the binary in `$GOPATH/bin/lib-ladybug/`
+so the rpath resolves correctly. To build without installing: `make build-ladybug`.
 
 ## Commands
 

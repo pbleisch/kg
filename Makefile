@@ -1,5 +1,5 @@
 .PHONY: build test test-race lint install clean check cover local \
-        download-ladybug-libs build-ladybug test-ladybug local-ladybug check-ladybug
+        download-ladybug-libs build-ladybug test-ladybug local-ladybug check-ladybug install-ladybug
 
 GO       ?= go
 GOFLAGS  ?=
@@ -97,5 +97,12 @@ local-ladybug: build-ladybug ## Copy kg-ladybug + lib to .kg/bin/ for local use
 	cp $(BIN_DIR)/$(BINARY)-ladybug .kg/bin/kg-ladybug-$(GOOS)
 	cp $(LBUG_LIB_DIR)/$(LBUG_LIB) .kg/bin/$(LBUG_LIB_DIR)/
 	@echo "Installed to .kg/bin/kg-ladybug-$(GOOS)"
+
+install-ladybug: build-ladybug ## Install kg-ladybug + native lib to GOPATH/bin
+	@mkdir -p $(shell $(GO) env GOPATH)/bin/$(LBUG_LIB_DIR)
+	cp $(BIN_DIR)/$(BINARY)-ladybug $(shell $(GO) env GOPATH)/bin/kg-ladybug
+	cp $(LBUG_LIB_DIR)/$(LBUG_LIB) $(shell $(GO) env GOPATH)/bin/$(LBUG_LIB_DIR)/
+	@echo "Installed kg-ladybug to $(shell $(GO) env GOPATH)/bin/"
+	@echo "Installed lib to $(shell $(GO) env GOPATH)/bin/$(LBUG_LIB_DIR)/$(LBUG_LIB)"
 
 check-ladybug: lint test-ladybug ## Run lint then test with ladybug backend
