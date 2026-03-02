@@ -56,6 +56,7 @@ Two variants are available:
 | `kg create <Type> <id> [attrs...]` | Create an entity |
 | `kg get <type:id>` | Get an entity by ID |
 | `kg find <Type> [filters...]` | Find entities by type |
+| `kg similar <Type> --field <f> --vector\|--like\|--vector-file` | Find similar entities by vector |
 | `kg set <type:id> key=value` | Set attributes |
 | `kg delete <type:id>` | Delete an entity |
 | `kg link <from> <rel> <to>` | Create a relation |

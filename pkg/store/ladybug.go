@@ -5,6 +5,7 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 
@@ -270,6 +271,72 @@ func (idx *ladybugIndex) FindByType(typeName string) ([]string, error) {
 		ids = append(ids, fmt.Sprint(val))
 	}
 	return ids, nil
+}
+
+// SimilarEntities implements VectorSearcher. It loads all entities of the
+// given type, extracts vectors from the specified fields (falling back to
+// <field>_embedding if the bare name is absent), computes similarity with
+// the query vector, and returns the top-N results sorted by score.
+func (idx *ladybugIndex) SimilarEntities(params SimilarityParams) ([]SimilarityResult, error) {
+	ids, err := idx.FindByType(params.TypeName)
+	if err != nil {
+		return nil, fmt.Errorf("finding type %s: %w", params.TypeName, err)
+	}
+
+	var results []SimilarityResult
+	for _, id := range ids {
+		e, err := idx.GetEntity(id)
+		if err != nil {
+			continue
+		}
+
+		bestScore := math.Inf(-1)
+		bestField := ""
+
+		for _, field := range params.Fields {
+			// Resolve field: try exact name, then <name>_embedding.
+			resolvedField := field
+			val, ok := e.Attributes[field]
+			if !ok {
+				resolvedField = field + "_embedding"
+				val, ok = e.Attributes[resolvedField]
+				if !ok {
+					continue
+				}
+			}
+
+			vec, ok := ExtractVector(val)
+			if !ok {
+				continue
+			}
+
+			score, err := computeScore(params.Metric, params.Vector, vec)
+			if err != nil {
+				continue // dimension mismatch — skip field
+			}
+
+			if score > bestScore {
+				bestScore = score
+				bestField = resolvedField
+			}
+		}
+
+		if math.IsInf(bestScore, -1) {
+			continue // no usable vector field on this entity
+		}
+
+		results = append(results, SimilarityResult{
+			Entity:     e,
+			Score:      bestScore,
+			MatchField: bestField,
+		})
+	}
+
+	SortResults(results)
+	if params.TopN > 0 && len(results) > params.TopN {
+		results = results[:params.TopN]
+	}
+	return results, nil
 }
 
 func (idx *ladybugIndex) FindByRelationTarget(relation, targetID string) ([]string, error) {
