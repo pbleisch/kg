@@ -25,6 +25,58 @@ kg back project:kg
 
 ## Install
 
+### macOS and Linux
+
+**`kg`** — pure Go, no dependencies:
+
+```bash
+VER=$(curl -fsSL https://api.github.com/repos/pbleisch/kg/releases/latest \
+  | grep '"tag_name"' | cut -d'"' -f4) && \
+OS=$(uname -s | tr '[:upper:]' '[:lower:]') && \
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && \
+curl -fsSL "https://github.com/pbleisch/kg/releases/download/${VER}/kg_${VER}_${OS}_${ARCH}.tar.gz" \
+  | tar xzf - kg && sudo mv kg /usr/local/bin/
+```
+
+**`kg-ladybug`** — includes the [LadybugDB](https://ladybugdb.com) backend
+(native library bundled, no separate install needed):
+
+```bash
+VER=$(curl -fsSL https://api.github.com/repos/pbleisch/kg/releases/latest \
+  | grep '"tag_name"' | cut -d'"' -f4) && \
+OS=$(uname -s | tr '[:upper:]' '[:lower:]') && \
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && \
+curl -fsSL "https://github.com/pbleisch/kg/releases/download/${VER}/kg-ladybug_${VER}_${OS}_${ARCH}.tar.gz" \
+  | sudo tar xzf - -C /usr/local/bin
+```
+
+The `kg-ladybug` archive contains the binary and a `lib-ladybug/` directory.
+Extracting them together keeps the native library discoverable at runtime.
+If you later move only the binary, copy `lib-ladybug/` alongside it or install
+the library system-wide (`sudo cp lib-ladybug/liblbug.* /usr/local/lib/ && sudo ldconfig`).
+
+### Windows
+
+**`kg`** (PowerShell):
+
+```powershell
+$ver = (Invoke-RestMethod https://api.github.com/repos/pbleisch/kg/releases/latest).tag_name
+Invoke-WebRequest "https://github.com/pbleisch/kg/releases/download/$ver/kg_${ver}_windows_amd64.zip" `
+  -OutFile kg.zip
+Expand-Archive kg.zip . -Force; Remove-Item kg.zip
+# Move kg.exe to a directory in your PATH
+```
+
+**`kg-ladybug`** (PowerShell):
+
+```powershell
+$ver = (Invoke-RestMethod https://api.github.com/repos/pbleisch/kg/releases/latest).tag_name
+Invoke-WebRequest "https://github.com/pbleisch/kg/releases/download/$ver/kg-ladybug_${ver}_windows_amd64.zip" `
+  -OutFile kg-ladybug.zip
+Expand-Archive kg-ladybug.zip . -Force; Remove-Item kg-ladybug.zip
+# Move kg-ladybug.exe and lbug_shared.dll to the same directory in your PATH
+```
+
 ### From source
 
 ```bash
@@ -33,20 +85,6 @@ cd kg
 make build          # builds to bin/kg
 make install        # installs to $GOPATH/bin
 ```
-
-### From release
-
-Download the latest binary from
-[Releases](https://github.com/pbleisch/kg/releases) (Linux and macOS,
-amd64 and arm64).
-
-Two variants are available:
-
-- **`kg`** — Pure Go, no external dependencies (default)
-- **`kg-ladybug`** — Includes [LadybugDB](https://ladybugdb.com) graph
-  index backend for richer query capabilities. The release archive
-  bundles the native LadybugDB library alongside the binary — just
-  extract and run, no separate library install required.
 
 ## Commands
 
