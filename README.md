@@ -79,12 +79,25 @@ Expand-Archive kg-ladybug.zip . -Force; Remove-Item kg-ladybug.zip
 
 ### From source
 
+**`kg`** (pure Go):
+
 ```bash
 git clone https://github.com/pbleisch/kg.git
 cd kg
 make build          # builds to bin/kg
 make install        # installs to $GOPATH/bin
 ```
+
+**`kg-ladybug`** (requires CGO and a C compiler):
+
+```bash
+make build-ladybug  # downloads native lib if needed, builds bin/kg-ladybug
+                    # also copies lib-ladybug/ next to the binary so it runs
+```
+
+The native library is downloaded automatically on first build to
+`lib-ladybug/` and copied to `bin/lib-ladybug/` beside the binary.
+To pre-download without building: `make download-ladybug-libs`.
 
 ## Commands
 
