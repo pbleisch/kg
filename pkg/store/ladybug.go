@@ -14,6 +14,9 @@ import (
 
 const ladybugAvailable = true
 
+// LadybugAvailable reports whether this binary was built with LadybugDB support.
+func LadybugAvailable() bool { return true }
+
 type ladybugIndex struct {
 	db   *lbug.Database
 	conn *lbug.Connection

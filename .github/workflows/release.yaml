@@ -69,7 +69,8 @@ jobs:
           CGO_LDFLAGS: -L${{ github.workspace }}/lib-ladybug -Wl,-rpath,$ORIGIN/lib-ladybug
         run: |
           mkdir -p bin
-          go build -tags=ladybug -o bin/kg-ladybug ./cmd/kg
+          go build -tags=ladybug -ldflags "-s -w -X main.version=${{ github.ref_name }}" \
+            -o bin/kg-ladybug ./cmd/kg
 
       - name: Package
         env:
@@ -111,7 +112,8 @@ jobs:
           CGO_LDFLAGS: -L${{ github.workspace }}/lib-ladybug -Wl,-rpath,@loader_path/lib-ladybug
         run: |
           mkdir -p bin
-          go build -tags=ladybug -o bin/kg-ladybug-darwin-arm64 ./cmd/kg
+          go build -tags=ladybug -ldflags "-s -w -X main.version=${{ github.ref_name }}" \
+            -o bin/kg-ladybug-darwin-arm64 ./cmd/kg
 
       # NOTE: amd64 CGO cross-compilation from arm64 macOS requires
       # that the Ladybug native libs ship a universal or x86_64 dylib.
@@ -122,7 +124,8 @@ jobs:
           GOARCH: amd64
           CGO_LDFLAGS: -L${{ github.workspace }}/lib-ladybug -Wl,-rpath,@loader_path/lib-ladybug
         run: |
-          go build -tags=ladybug -o bin/kg-ladybug-darwin-amd64 ./cmd/kg
+          go build -tags=ladybug -ldflags "-s -w -X main.version=${{ github.ref_name }}" \
+            -o bin/kg-ladybug-darwin-amd64 ./cmd/kg
 
       - name: Package
         env:
@@ -179,7 +182,8 @@ jobs:
           export CGO_LDFLAGS="-L$(pwd)/lib-ladybug"
           export PATH="$(pwd)/lib-ladybug:$PATH"
           mkdir -p bin
-          go build -tags=ladybug -o bin/kg-ladybug.exe ./cmd/kg
+          go build -tags=ladybug -ldflags "-s -w -X main.version=${{ github.ref_name }}" \
+            -o bin/kg-ladybug.exe ./cmd/kg
 
       - name: Package
         shell: pwsh
