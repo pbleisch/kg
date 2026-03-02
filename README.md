@@ -44,7 +44,9 @@ Two variants are available:
 
 - **`kg`** — Pure Go, no external dependencies (default)
 - **`kg-ladybug`** — Includes [LadybugDB](https://ladybugdb.com) graph
-  index backend for richer query capabilities (requires CGO)
+  index backend for richer query capabilities. The release archive
+  bundles the native LadybugDB library alongside the binary — just
+  extract and run, no separate library install required.
 
 ## Commands
 
@@ -205,56 +207,35 @@ Requires Go 1.25+.
 
 ### Installing Ladybug native libraries
 
-The `kg-ladybug` binary links against native LadybugDB libraries. For canonical, supported installation options and packages, see the official Ladybug installation guide:
+Release archives for `kg-ladybug` already bundle the native library. When
+you extract the archive, the `lib-ladybug/` directory is placed next to the
+binary and the binary finds it automatically via its embedded rpath — no
+extra steps needed.
 
-https://docs.ladybugdb.com/installation/
+```
+kg-ladybug_vX.Y.Z_linux_amd64.tar.gz
+  kg-ladybug          ← binary
+  lib-ladybug/
+    liblbug.so        ← native lib, found automatically at runtime
+```
 
-Below are the most popular, user-facing examples for each platform that resolve the common "Library not loaded: @rpath/liblbug.dylib" error and mirror what CI does when producing Ladybug-enabled artifacts.
+macOS and Windows archives follow the same layout (`.dylib` / `.dll`).
 
-Linux (quick example)
+**Only needed if you install the binary system-wide** (e.g., move
+`kg-ladybug` to `/usr/local/bin/` without `lib-ladybug/` beside it). In
+that case, copy the lib to a standard library path:
 
 ```bash
-# download the official helper and extract linux libs to ./lib-ladybug
-curl -sL https://raw.githubusercontent.com/LadybugDB/go-ladybug/refs/heads/master/download_lbug.sh | bash -s -- -out lib-ladybug -platform linux
-# install runtime so the dynamic linker can find it
-sudo cp lib-ladybug/lib/dynamic/linux/liblbug.so /usr/local/lib/
-sudo chmod 644 /usr/local/lib/liblbug.so
-sudo ldconfig
-# verify
-ldd /usr/local/bin/kg | grep liblbug
+# Linux
+sudo cp lib-ladybug/liblbug.so /usr/local/lib/ && sudo ldconfig
+
+# macOS
+sudo cp lib-ladybug/liblbug.dylib /usr/local/lib/
 ```
 
-macOS (quick example)
-
-```bash
-# download helper and extract darwin libs
-curl -sL https://raw.githubusercontent.com/LadybugDB/go-ladybug/refs/heads/master/download_lbug.sh -o download_lbug.sh
-chmod +x download_lbug.sh
-./download_lbug.sh -out lib-ladybug -platform darwin
-# copy into a standard library path so dyld can find it
-sudo cp lib-ladybug/lib/dynamic/darwin/liblbug.dylib /usr/local/lib/
-sudo chmod 644 /usr/local/lib/liblbug.dylib
-# or, for a single-binary install, place the runtime next to the binary:
-# sudo mkdir -p /usr/local/bin/lib-ladybug
-# sudo cp lib-ladybug/lib/dynamic/darwin/liblbug.dylib /usr/local/bin/lib-ladybug/
-```
-
-Windows (quick example)
-
-```powershell
-# extract windows libs (use Git Bash / MSYS2 to run the helper)
-curl -sL https://raw.githubusercontent.com/LadybugDB/go-ladybug/refs/heads/master/download_lbug.sh -o download_lbug.sh
-./download_lbug.sh -out lib-ladybug -platform windows
-# place the DLL next to the executable or add its folder to PATH
-Copy-Item .\lib-ladybug\lib\dynamic\windows\liblbug.dll -Destination "C:\Program Files\kg\"
-# or next to kg.exe
-```
-
-Notes
-
-- These examples are quick fixes; prefer the Ladybug docs for production installation: https://docs.ladybugdb.com/installation/
-- If you still see "Library not loaded: @rpath/liblbug.dylib" on macOS, copy the dylib to /usr/local/lib or the Homebrew lib prefix, or place the lib-ladybug directory beside the binary; clear quarantine and ad-hoc codesign if Gatekeeper blocks loading.
-- When filing an issue, include the full dyld (macOS) or ldd (Linux) output and the location where you placed the native libs.
+Or keep the extracted directory together and add it to `PATH` instead of
+moving the binary. For more options see the official Ladybug installation
+guide: https://docs.ladybugdb.com/installation/
 
 ## Architecture Decisions
 
