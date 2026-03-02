@@ -28,6 +28,20 @@ type FileEntry struct {
 }
 
 func manifestPath(kgDir string) string {
+	// Use a per-backend manifest so that switching between the bolt and
+	// ladybug binaries does not cause one backend's index to be seen as
+	// already-synced by the other (which would leave the new index empty).
+	backend := readBackendConfig(kgDir)
+	if backend == "auto" || backend == "" {
+		if ladybugAvailable {
+			backend = "ladybug"
+		} else {
+			backend = "bolt"
+		}
+	}
+	if backend == "ladybug" {
+		return filepath.Join(kgDir, ".cache", "manifest-ladybug.json")
+	}
 	return filepath.Join(kgDir, ".cache", "manifest.json")
 }
 
