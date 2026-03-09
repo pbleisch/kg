@@ -61,10 +61,14 @@ func TestReadBackendConfig_InvalidYAML(t *testing.T) {
 }
 
 func TestActiveBackend_Default(t *testing.T) {
-	dir := t.TempDir() // no config → auto → bolt (no ladybug build tag)
+	dir := t.TempDir()
 	got := ActiveBackend(dir)
-	if got != "bolt" {
-		t.Fatalf("expected bolt, got %q", got)
+	want := "bolt"
+	if ladybugAvailable {
+		want = "ladybug"
+	}
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
 	}
 }
 
@@ -79,8 +83,12 @@ func TestActiveBackend_ForceBolt(t *testing.T) {
 func TestActiveBackend_ForceLadybug(t *testing.T) {
 	dir := t.TempDir()
 	writeConfig(t, dir, "backend: ladybug\n")
-	if got := ActiveBackend(dir); got != "ladybug (unavailable)" {
-		t.Fatalf("expected %q, got %q", "ladybug (unavailable)", got)
+	want := "ladybug (unavailable)"
+	if ladybugAvailable {
+		want = "ladybug"
+	}
+	if got := ActiveBackend(dir); got != want {
+		t.Fatalf("expected %q, got %q", want, got)
 	}
 }
 

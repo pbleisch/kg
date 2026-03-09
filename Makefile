@@ -67,6 +67,15 @@ endif
 LBUG_CGO_ENV = CGO_ENABLED=1 \
   CGO_LDFLAGS="-L$(CURDIR)/$(LBUG_LIB_DIR) -Wl,-rpath,$(LBUG_RPATH)"
 
+# When running tests, go test places the binary in a temp dir where the
+# embedded rpath (@loader_path/... or $ORIGIN/...) can't find the lib.
+# Set the platform library search path so the test binary loads correctly.
+ifeq ($(GOOS),darwin)
+  LBUG_TEST_ENV = DYLD_LIBRARY_PATH=$(CURDIR)/$(LBUG_LIB_DIR)
+else
+  LBUG_TEST_ENV = LD_LIBRARY_PATH=$(CURDIR)/$(LBUG_LIB_DIR)
+endif
+
 # Download the native library into lib-ladybug/ (one-time; make skips if
 # the file already exists).
 $(LBUG_LIB_DIR)/$(LBUG_LIB):
@@ -90,7 +99,7 @@ build-ladybug: $(LBUG_LIB_DIR)/$(LBUG_LIB) ## Build kg-ladybug (downloads native
 	@echo "Built $(BIN_DIR)/$(BINARY)-ladybug (lib → $(BIN_DIR)/$(LBUG_LIB_DIR)/$(LBUG_LIB))"
 
 test-ladybug: $(LBUG_LIB_DIR)/$(LBUG_LIB) ## Run tests with ladybug backend
-	$(LBUG_CGO_ENV) $(GO) test -tags ladybug ./... -count=1
+	$(LBUG_TEST_ENV) $(LBUG_CGO_ENV) $(GO) test -tags ladybug ./... -count=1
 
 local-ladybug: build-ladybug ## Copy kg-ladybug + lib to .kg/bin/ for local use
 	@mkdir -p .kg/bin/$(LBUG_LIB_DIR)

@@ -218,10 +218,15 @@ func TestRebuild(t *testing.T) {
 		t.Fatalf("Sync: %v", err)
 	}
 
-	// Verify the bolt file exists.
-	dbPath := filepath.Join(dir, ".cache", "cayley.bolt")
+	// Verify the index file/dir exists.
+	var dbPath string
+	if ladybugAvailable {
+		dbPath = filepath.Join(dir, ".cache", "ladybug")
+	} else {
+		dbPath = filepath.Join(dir, ".cache", "cayley.bolt")
+	}
 	if _, err := os.Stat(dbPath); err != nil {
-		t.Fatalf("expected bolt file: %v", err)
+		t.Fatalf("expected index at %s: %v", dbPath, err)
 	}
 
 	// Rebuild from scratch.

@@ -24,8 +24,11 @@ type ladybugIndex struct {
 
 func openLadybug(kgDir string) (Indexer, error) {
 	dbDir := filepath.Join(kgDir, ".cache", "ladybug")
-	if err := os.MkdirAll(dbDir, 0o755); err != nil {
-		return nil, fmt.Errorf("creating ladybug dir: %w", err)
+	// Only ensure the parent (.cache/) exists — LadybugDB must create
+	// the database directory itself. Pre-creating it causes OpenDatabase
+	// to fail with status 1 on an empty directory.
+	if err := os.MkdirAll(filepath.Dir(dbDir), 0o755); err != nil {
+		return nil, fmt.Errorf("creating cache dir: %w", err)
 	}
 
 	cfg := lbug.DefaultSystemConfig()

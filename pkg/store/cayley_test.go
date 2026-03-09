@@ -2,6 +2,7 @@ package store
 
 import (
 	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 )
@@ -173,12 +174,20 @@ func TestCacheDirCreated(t *testing.T) {
 	}
 	defer idx.Close()
 
-	dbPath := dir + "/.cache/cayley.bolt"
-	info, err := os.Stat(dbPath)
-	if err != nil {
-		t.Fatalf("db file not created: %v", err)
-	}
-	if info.IsDir() {
-		t.Fatal("db path should be a file, not a directory")
+	if ladybugAvailable {
+		// With ladybug, the database is a directory created by LadybugDB.
+		dbPath := filepath.Join(dir, ".cache", "ladybug")
+		if _, err := os.Stat(dbPath); err != nil {
+			t.Fatalf("ladybug db dir not created: %v", err)
+		}
+	} else {
+		dbPath := dir + "/.cache/cayley.bolt"
+		info, err := os.Stat(dbPath)
+		if err != nil {
+			t.Fatalf("db file not created: %v", err)
+		}
+		if info.IsDir() {
+			t.Fatal("db path should be a file, not a directory")
+		}
 	}
 }
