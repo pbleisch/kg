@@ -84,20 +84,20 @@ Expand-Archive kg-ladybug.zip . -Force; Remove-Item kg-ladybug.zip
 ```bash
 git clone https://github.com/pbleisch/kg.git
 cd kg
-make build          # builds to bin/kg
-make install        # installs to $GOPATH/bin
+mage build          # builds to bin/kg
+mage install        # installs to $GOPATH/bin
 ```
 
 **`kg-ladybug`** (requires CGO and a C compiler):
 
 ```bash
-make install-ladybug  # downloads native lib if needed, builds, and installs
+mage ladybug:install  # downloads native lib if needed, builds, and installs
                       # kg-ladybug + lib-ladybug/ to $GOPATH/bin/
 ```
 
 The native library is downloaded automatically on first build to
 `lib-ladybug/` and installed alongside the binary in `$GOPATH/bin/lib-ladybug/`
-so the rpath resolves correctly. To build without installing: `make build-ladybug`.
+so the rpath resolves correctly. To build without installing: `mage ladybug:build`.
 
 ## Commands
 
@@ -203,14 +203,17 @@ Configure your agent platform with `kg agent mcp-config`.
 
 ## Development
 
+This project uses [Mage](https://magefile.org) as its build tool. Install it with
+`go install github.com/magefile/mage@latest`.
+
 ```bash
-make build       # compile to bin/kg
-make test        # run tests
-make test-race   # run tests with race detector
-make lint        # go vet
-make check       # lint + test
-make cover       # test coverage report
-make local       # build and copy to .kg/bin/kg-<os>
+mage build       # compile to bin/kg
+mage test        # run tests
+mage testRace    # run tests with race detector
+mage lint        # go vet
+mage check       # lint + test
+mage cover       # test coverage report
+mage local       # build and copy to .kg/bin/kg-<os>
 ```
 
 ## Releasing
@@ -218,7 +221,7 @@ make local       # build and copy to .kg/bin/kg-<os>
 Releases are produced with goreleaser (recommended) or can be done manually. Before releasing, make sure the working tree is clean and checks pass:
 
 ```bash
-make check
+mage check
 git pull --rebase
 ```
 
@@ -250,9 +253,9 @@ Notes on good release notes:
 ### Building with LadybugDB
 
 ```bash
-make build-ladybug   # compile to bin/kg-ladybug (requires CGO + native libs)
-make test-ladybug    # run tests with ladybug backend
-make check-ladybug   # lint + test with ladybug
+mage ladybug:build   # compile to bin/kg-ladybug (requires CGO + native libs)
+mage ladybug:test    # run tests with ladybug backend
+mage ladybug:check   # lint + test with ladybug
 ```
 
 Requires Go 1.25+.

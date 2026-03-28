@@ -5,6 +5,7 @@ go 1.25.3
 require (
 	github.com/LadybugDB/go-ladybug v0.13.1
 	github.com/fsnotify/fsnotify v1.9.0
+	github.com/magefile/mage v1.17.0
 	github.com/spf13/cobra v1.10.2
 	go.etcd.io/bbolt v1.4.3
 	golang.org/x/term v0.40.0
