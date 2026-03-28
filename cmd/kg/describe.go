@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"sort"
 
+	"github.com/pbleisch/kg/pkg/output"
 	"github.com/pbleisch/kg/pkg/schema"
 	"github.com/spf13/cobra"
 )
@@ -19,41 +21,47 @@ func init() {
 			if err != nil {
 				return fmt.Errorf("loading schema %s: %w", typeName, err)
 			}
-			fmt.Printf("type: %s\n", s.Type)
-			if s.Description != "" {
-				fmt.Printf("description: %s\n", s.Description)
+
+			attrNames := make([]string, 0, len(s.Attributes))
+			for name := range s.Attributes {
+				attrNames = append(attrNames, name)
+			}
+			sort.Strings(attrNames)
+
+			attrs := make([]output.SchemaAttr, 0, len(attrNames))
+			for _, name := range attrNames {
+				a := s.Attributes[name]
+				attrs = append(attrs, output.SchemaAttr{
+					Name:     name,
+					Type:     a.Type,
+					Required: a.Required,
+				})
 			}
 
-			if len(s.Attributes) > 0 {
-				fmt.Println("attributes:")
-				attrNames := make([]string, 0, len(s.Attributes))
-				for name := range s.Attributes {
-					attrNames = append(attrNames, name)
-				}
-				sort.Strings(attrNames)
-				for _, name := range attrNames {
-					a := s.Attributes[name]
-					req := ""
-					if a.Required {
-						req = " (required)"
-					}
-					fmt.Printf("  %s: %s%s\n", name, a.Type, req)
-				}
+			relNames := make([]string, 0, len(s.Relations))
+			for name := range s.Relations {
+				relNames = append(relNames, name)
+			}
+			sort.Strings(relNames)
+
+			rels := make([]output.SchemaRel, 0, len(relNames))
+			for _, name := range relNames {
+				r := s.Relations[name]
+				rels = append(rels, output.SchemaRel{
+					Name:        name,
+					Target:      r.Target,
+					Cardinality: r.Cardinality,
+				})
 			}
 
-			if len(s.Relations) > 0 {
-				fmt.Println("relations:")
-				relNames := make([]string, 0, len(s.Relations))
-				for name := range s.Relations {
-					relNames = append(relNames, name)
-				}
-				sort.Strings(relNames)
-				for _, name := range relNames {
-					r := s.Relations[name]
-					fmt.Printf("  %s: -> %s [%s]\n", name, r.Target, r.Cardinality)
-				}
+			info := output.SchemaInfo{
+				Type:        s.Type,
+				Description: s.Description,
+				Attributes:  attrs,
+				Relations:   rels,
 			}
-			return nil
+			f := output.NewFormatter(cfg.format)
+			return f.FormatSchema(os.Stdout, info)
 		},
 	}
 	rootCmd.AddCommand(cmd)

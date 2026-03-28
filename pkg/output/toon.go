@@ -103,6 +103,53 @@ func (f *toonFormatter) FormatError(w io.Writer, code string, message string, su
 	return nil
 }
 
+func (f *toonFormatter) FormatSchema(w io.Writer, s SchemaInfo) error {
+	fmt.Fprintf(w, "type: %s\n", s.Type)
+	if s.Description != "" {
+		fmt.Fprintf(w, "description: %s\n", s.Description)
+	}
+	if len(s.Attributes) > 0 {
+		parts := make([]string, len(s.Attributes))
+		for i, a := range s.Attributes {
+			req := ""
+			if a.Required {
+				req = "(required)"
+			}
+			parts[i] = a.Name + ":" + a.Type + req
+		}
+		fmt.Fprintf(w, "attributes[%d]: %s\n", len(s.Attributes), strings.Join(parts, ","))
+	}
+	if len(s.Relations) > 0 {
+		parts := make([]string, len(s.Relations))
+		for i, r := range s.Relations {
+			parts[i] = fmt.Sprintf("%s->%s[%s]", r.Name, r.Target, r.Cardinality)
+		}
+		fmt.Fprintf(w, "relations[%d]: %s\n", len(s.Relations), strings.Join(parts, ","))
+	}
+	return nil
+}
+
+func (f *toonFormatter) FormatTypeList(w io.Writer, names []string) error {
+	fmt.Fprintf(w, "types[%d]: %s\n", len(names), strings.Join(names, ","))
+	return nil
+}
+
+func (f *toonFormatter) FormatPathIDs(w io.Writer, ids []string) error {
+	for _, id := range ids {
+		fmt.Fprintln(w, id)
+	}
+	return nil
+}
+
+func (f *toonFormatter) FormatPathVerbose(w io.Writer, results []PathResult) error {
+	fmt.Fprintf(w, "path[%d]{id,depth,via}:\n", len(results))
+	for _, r := range results {
+		fmt.Fprintf(w, "  %s,%d,%s\n", r.ID, r.Depth, r.Via)
+	}
+	fmt.Fprintf(w, "count: %d\n", len(results))
+	return nil
+}
+
 func sortedKeys(m map[string]bool) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {

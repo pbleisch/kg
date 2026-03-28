@@ -86,3 +86,72 @@ func (f *humanFormatter) FormatError(w io.Writer, code string, message string, s
 	}
 	return nil
 }
+
+func (f *humanFormatter) FormatSchema(w io.Writer, s SchemaInfo) error {
+	label := fmt.Sprintf(" %s ", s.Type)
+	pad := strings.Repeat("═", 3)
+	fmt.Fprintf(w, "%s%s%s\n", pad, label, pad)
+
+	if s.Description != "" {
+		fmt.Fprintf(w, "  %s\n", s.Description)
+		fmt.Fprintln(w)
+	}
+
+	if len(s.Attributes) > 0 {
+		fmt.Fprintln(w, "  Attributes:")
+		maxLen := 0
+		for _, a := range s.Attributes {
+			if len(a.Name) > maxLen {
+				maxLen = len(a.Name)
+			}
+		}
+		for _, a := range s.Attributes {
+			req := ""
+			if a.Required {
+				req = " (required)"
+			}
+			fmt.Fprintf(w, "    %-*s  %s%s\n", maxLen, a.Name, a.Type, req)
+		}
+	}
+
+	if len(s.Relations) > 0 {
+		if len(s.Attributes) > 0 {
+			fmt.Fprintln(w)
+		}
+		fmt.Fprintln(w, "  Relations:")
+		for _, r := range s.Relations {
+			fmt.Fprintf(w, "    %s → %s [%s]\n", r.Name, r.Target, r.Cardinality)
+		}
+	}
+
+	return nil
+}
+
+func (f *humanFormatter) FormatTypeList(w io.Writer, names []string) error {
+	fmt.Fprintf(w, "Schema Types (%d):\n", len(names))
+	for _, name := range names {
+		fmt.Fprintf(w, "  • %s\n", name)
+	}
+	return nil
+}
+
+func (f *humanFormatter) FormatPathIDs(w io.Writer, ids []string) error {
+	for _, id := range ids {
+		fmt.Fprintln(w, id)
+	}
+	if len(ids) > 1 {
+		fmt.Fprintf(w, "\n(%d results)\n", len(ids))
+	}
+	return nil
+}
+
+func (f *humanFormatter) FormatPathVerbose(w io.Writer, results []PathResult) error {
+	for _, r := range results {
+		fmt.Fprintf(w, "%s%s (via %s)\n",
+			strings.Repeat("  ", r.Depth-1), r.ID, r.Via)
+	}
+	if len(results) > 1 {
+		fmt.Fprintf(w, "\n(%d results)\n", len(results))
+	}
+	return nil
+}

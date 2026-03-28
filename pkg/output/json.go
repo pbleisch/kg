@@ -38,3 +38,28 @@ func (f *jsonFormatter) FormatError(w io.Writer, code string, message string, su
 	}
 	return json.NewEncoder(w).Encode(obj)
 }
+
+func (f *jsonFormatter) FormatSchema(w io.Writer, s SchemaInfo) error {
+	return json.NewEncoder(w).Encode(s)
+}
+
+func (f *jsonFormatter) FormatTypeList(w io.Writer, names []string) error {
+	if names == nil {
+		names = []string{}
+	}
+	return json.NewEncoder(w).Encode(names)
+}
+
+func (f *jsonFormatter) FormatPathIDs(w io.Writer, ids []string) error {
+	if ids == nil {
+		ids = []string{}
+	}
+	return json.NewEncoder(w).Encode(ids)
+}
+
+func (f *jsonFormatter) FormatPathVerbose(w io.Writer, results []PathResult) error {
+	if results == nil {
+		results = []PathResult{}
+	}
+	return json.NewEncoder(w).Encode(results)
+}

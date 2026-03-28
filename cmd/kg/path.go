@@ -3,8 +3,8 @@ package main
 import (
 "fmt"
 "os"
-"strings"
 
+"github.com/pbleisch/kg/pkg/output"
 "github.com/pbleisch/kg/pkg/query"
 "github.com/spf13/cobra"
 )
@@ -41,6 +41,7 @@ Recursive: recursive,
 i++
 }
 
+f := output.NewFormatter(cfg.format)
 verbose, _ := cmd.Flags().GetBool("verbose")
 
 if verbose {
@@ -48,21 +49,18 @@ results, err := query.PathVerbose(cfg.kgDir, startID, steps)
 if err != nil {
 return err
 }
-for _, r := range results {
-fmt.Fprintf(os.Stdout, "%s%s (via %s)\n",
-strings.Repeat("  ", r.Depth-1), r.ID, r.Via)
+out := make([]output.PathResult, len(results))
+for j, r := range results {
+out[j] = output.PathResult{ID: r.ID, Depth: r.Depth, Via: r.Via}
 }
-return nil
+return f.FormatPathVerbose(os.Stdout, out)
 }
 
 ids, err := query.Path(cfg.kgDir, startID, steps)
 if err != nil {
 return err
 }
-for _, id := range ids {
-fmt.Fprintln(os.Stdout, id)
-}
-return nil
+return f.FormatPathIDs(os.Stdout, ids)
 },
 }
 cmd.Flags().Bool("verbose", false, "show traversal depth and relation info")
