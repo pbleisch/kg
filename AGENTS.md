@@ -1,5 +1,9 @@
 # Agent Instructions
 
+> **Note for human contributors:** This file provides instructions for AI
+> coding agents (GitHub Copilot, Claude, etc.) that work on this repository.
+> If you're a human contributor, see [CONTRIBUTING.md](CONTRIBUTING.md) instead.
+
 This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
 
 ## Quick Reference
