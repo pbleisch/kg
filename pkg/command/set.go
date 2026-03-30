@@ -55,5 +55,6 @@ func Set(kgDir, id string, attrs map[string]string) (*store.Entity, error) {
 		return nil, fmt.Errorf("syncing index: %w", err)
 	}
 
+	store.AutoEmbed(kgDir, e.ID)
 	return e, nil
 }

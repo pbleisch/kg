@@ -171,6 +171,20 @@ backend: auto  # auto (default), bolt, or ladybug
 - **bolt** — BoltDB (pure Go, always available)
 - **ladybug** — LadybugDB (requires the `kg-ladybug` binary)
 
+### Embeddings
+
+kg can automatically generate vector embeddings for entity attributes,
+enabling semantic similarity search with `kg similar`.
+
+```bash
+kg embed --init                          # scaffold embedding script
+pip install -r .kg/scripts/requirements.txt
+kg embed                                 # generate vectors
+kg similar Person --field name --like person:alice
+```
+
+See [docs/embedding.md](docs/embedding.md) for the full guide.
+
 ## Agent Integration
 
 `kg agent` provides onboarding and discovery for AI coding agents:

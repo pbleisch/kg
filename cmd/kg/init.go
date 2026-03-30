@@ -29,7 +29,21 @@ func init() {
 				}
 			}
 
-			configContent := "# kg knowledge graph configuration\n# Entity YAML files are stored in entities/<type>/<id>.yaml\n# Schema files are stored in schema/<type>.yaml\n\n# Index backend: auto, bolt, or ladybug\nbackend: auto\n"
+			configContent := `# kg knowledge graph configuration
+# Entity YAML files are stored in entities/<type>/<id>.yaml
+# Schema files are stored in schema/<type>.yaml
+
+# Index backend: auto, bolt, or ladybug
+backend: auto
+
+# Embedding configuration (uncomment to enable)
+# Run 'kg embed --init' to scaffold a working setup automatically.
+# embedding:
+#   command: "python3 .kg/scripts/embed.py"
+#   fields: [name, description]
+#   batch: false
+#   auto: false
+`
 			if err := os.WriteFile(configPath, []byte(configContent), 0o644); err != nil {
 				return fmt.Errorf("writing config.yaml: %w", err)
 			}
