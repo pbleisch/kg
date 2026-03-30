@@ -101,6 +101,112 @@ func Create(kgDir, typeName, localID string, attrs map[string]string) (*store.En
 	return e, nil
 }
 
+// Upsert creates a new entity or merges attributes into an existing one.
+// If the entity already exists, provided attributes overwrite existing ones
+// and relations are preserved.
+func Upsert(kgDir, typeName, localID string, attrs map[string]string) (*store.Entity, error) {
+	lowerType := strings.ToLower(typeName)
+	entityID := lowerType + ":" + localID
+
+	existing, readErr := store.ReadEntity(kgDir, entityID)
+	if readErr != nil {
+		return Create(kgDir, typeName, localID, attrs)
+	}
+
+	if existing.Attributes == nil {
+		existing.Attributes = make(map[string]any)
+	}
+
+	s, err := schema.LoadSchema(kgDir, lowerType)
+	if err == nil {
+		for k, v := range attrs {
+			if def, ok := s.Attributes[k]; ok {
+				pv, perr := parseAttrValue(def.Type, v)
+				if perr != nil {
+					return nil, fmt.Errorf("attribute %s: %w", k, perr)
+				}
+				existing.Attributes[k] = pv
+			} else {
+				existing.Attributes[k] = v
+			}
+		}
+		if errs := schema.ValidateEntity(s, existing); len(errs) > 0 {
+			msgs := make([]string, len(errs))
+			for i, ve := range errs {
+				msgs[i] = ve.Error()
+			}
+			return nil, fmt.Errorf("validation failed: %s", strings.Join(msgs, "; "))
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("loading schema: %w", err)
+	} else {
+		for k, v := range attrs {
+			existing.Attributes[k] = v
+		}
+	}
+
+	if err := store.WriteEntity(kgDir, existing); err != nil {
+		return nil, fmt.Errorf("writing entity: %w", err)
+	}
+	if err := store.Sync(kgDir); err != nil {
+		return nil, fmt.Errorf("syncing index: %w", err)
+	}
+	return existing, nil
+}
+
+// UpsertEntity creates a new entity or merges into an existing one using
+// full entity data. Attributes from e overwrite existing; relations are
+// merged additively (new targets appended, existing preserved).
+func UpsertEntity(kgDir string, e *store.Entity) (*store.Entity, error) {
+	existing, readErr := store.ReadEntity(kgDir, e.ID)
+	if readErr != nil {
+		if err := store.WriteEntity(kgDir, e); err != nil {
+			return nil, fmt.Errorf("writing entity: %w", err)
+		}
+		if err := store.Sync(kgDir); err != nil {
+			return nil, fmt.Errorf("syncing index: %w", err)
+		}
+		return e, nil
+	}
+
+	// Merge attributes (new wins).
+	if existing.Attributes == nil {
+		existing.Attributes = make(map[string]any)
+	}
+	for k, v := range e.Attributes {
+		existing.Attributes[k] = v
+	}
+
+	// Merge relations additively.
+	if existing.Relations == nil {
+		existing.Relations = make(map[string][]string)
+	}
+	for rel, targets := range e.Relations {
+		for _, t := range targets {
+			if !containsString(existing.Relations[rel], t) {
+				existing.Relations[rel] = append(existing.Relations[rel], t)
+			}
+		}
+	}
+
+	if err := store.WriteEntity(kgDir, existing); err != nil {
+		return nil, fmt.Errorf("writing entity: %w", err)
+	}
+	if err := store.Sync(kgDir); err != nil {
+		return nil, fmt.Errorf("syncing index: %w", err)
+	}
+	return existing, nil
+}
+
+func containsString(ss []string, s string) bool {
+	for _, v := range ss {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
 // ParseAttrs converts ["key=value", ...] into a map. Each argument is split
 // on the first '=' sign.
 func ParseAttrs(args []string) (map[string]string, error) {

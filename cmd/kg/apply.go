@@ -30,6 +30,7 @@ type Action struct {
 	From       string                 `yaml:"from,omitempty" json:"from,omitempty"`
 	To         string                 `yaml:"to,omitempty" json:"to,omitempty"`
 	Rel        string                 `yaml:"rel,omitempty" json:"rel,omitempty"`
+	Prefer     string                 `yaml:"prefer,omitempty" json:"prefer,omitempty"`
 	Attributes map[string]interface{} `yaml:"attributes,omitempty" json:"attributes,omitempty"`
 }
 
@@ -216,6 +217,24 @@ func init() {
 					}
 					if err := command.Unlink(cfg.kgDir, a.From, a.Rel, a.To); err != nil {
 						return fmt.Errorf("unlink %s->%s (%s): %w", a.From, a.To, a.Rel, err)
+					}
+				case "upsert":
+					if a.Entity == nil || a.Entity.ID == "" {
+						return fmt.Errorf("upsert action missing entity or id")
+					}
+					if _, err := command.UpsertEntity(cfg.kgDir, a.Entity); err != nil {
+						return fmt.Errorf("upserting %q: %w", a.Entity.ID, err)
+					}
+				case "merge":
+					if a.From == "" || a.Target == "" {
+						return fmt.Errorf("merge action missing from/target")
+					}
+					opts := command.MergeOptions{
+						PreferSource: a.Prefer == "source",
+						CrossType:    true,
+					}
+					if _, err := command.Merge(cfg.kgDir, a.From, a.Target, opts); err != nil {
+						return fmt.Errorf("merging %s→%s: %w", a.From, a.Target, err)
 					}
 				default:
 					return fmt.Errorf("unknown action %q", a.Action)
