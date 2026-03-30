@@ -101,30 +101,49 @@ func fileChecksum(path string) (string, error) {
 }
 
 // Sync performs an incremental sync from YAML entity files to the index.
-// Only files that are new, modified, or deleted since the last sync are
-// processed.
+// Malformed entities are skipped so that one bad file does not block the
+// entire sync. Use SyncWithResult to inspect warnings and counts.
 func Sync(kgDir string) error {
+	_, err := SyncWithResult(kgDir)
+	return err
+}
+
+// SyncResult collects statistics from a sync or rebuild operation.
+type SyncResult struct {
+	Synced   int      `json:"synced"`
+	Skipped  int      `json:"skipped"`
+	Removed  int      `json:"removed"`
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+// SyncWithResult performs an incremental sync and returns detailed statistics.
+// Malformed entities are skipped with warnings rather than aborting the sync.
+func SyncWithResult(kgDir string) (*SyncResult, error) {
+	result := &SyncResult{}
+
 	idx, err := OpenIndex(kgDir)
 	if err != nil {
-		return fmt.Errorf("opening index: %w", err)
+		return nil, fmt.Errorf("opening index: %w", err)
 	}
 	defer idx.Close()
 
 	manifest, err := LoadManifest(kgDir)
 	if err != nil {
-		return fmt.Errorf("loading manifest: %w", err)
+		return nil, fmt.Errorf("loading manifest: %w", err)
 	}
 
 	entitiesDir := filepath.Join(kgDir, "entities")
 	currentFiles := make(map[string]struct{})
 
 	// Walk all YAML files under entities/.
-	err = filepath.WalkDir(entitiesDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			if os.IsNotExist(err) && path == entitiesDir {
+	err = filepath.WalkDir(entitiesDir, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if os.IsNotExist(walkErr) && path == entitiesDir {
 				return nil // no entities dir yet
 			}
-			return err
+			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: %v", path, walkErr))
+			result.Skipped++
+			return nil
 		}
 		if d.IsDir() || !strings.HasSuffix(path, ".yaml") {
 			return nil
@@ -132,13 +151,17 @@ func Sync(kgDir string) error {
 
 		rel, err := filepath.Rel(kgDir, path)
 		if err != nil {
-			return fmt.Errorf("computing relative path: %w", err)
+			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: relative path: %v", path, err))
+			result.Skipped++
+			return nil
 		}
 		currentFiles[rel] = struct{}{}
 
 		checksum, err := fileChecksum(path)
 		if err != nil {
-			return fmt.Errorf("checksumming %s: %w", rel, err)
+			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: checksum: %v", rel, err))
+			result.Skipped++
+			return nil
 		}
 
 		prev, exists := manifest.Files[rel]
@@ -149,11 +172,15 @@ func Sync(kgDir string) error {
 		// Read the entity from the YAML file.
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return fmt.Errorf("reading %s: %w", rel, err)
+			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: read: %v", rel, err))
+			result.Skipped++
+			return nil
 		}
 		var e Entity
 		if err := yaml.Unmarshal(data, &e); err != nil {
-			return fmt.Errorf("parsing %s: %w", rel, err)
+			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: parse: %v", rel, err))
+			result.Skipped++
+			return nil
 		}
 
 		// For updates, remove old quads first.
@@ -162,22 +189,27 @@ func Sync(kgDir string) error {
 		}
 
 		if err := idx.AddEntity(&e); err != nil {
-			return fmt.Errorf("indexing %s: %w", rel, err)
+			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: index: %v", rel, err))
+			result.Skipped++
+			return nil
 		}
 
 		info, err := d.Info()
 		if err != nil {
-			return fmt.Errorf("stat %s: %w", rel, err)
+			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: stat: %v", rel, err))
+			result.Skipped++
+			return nil
 		}
 
 		manifest.Files[rel] = FileEntry{
 			Checksum: checksum,
 			ModTime:  info.ModTime(),
 		}
+		result.Synced++
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("walking entities: %w", err)
+		return result, fmt.Errorf("walking entities: %w", err)
 	}
 
 	// Remove entries for files that no longer exist on disk.
@@ -188,80 +220,124 @@ func Sync(kgDir string) error {
 				_ = idx.RemoveEntity(e.ID)
 			}
 			delete(manifest.Files, rel)
+			result.Removed++
 		}
 	}
 
 	manifest.SyncedAt = time.Now()
 	if err := SaveManifest(kgDir, manifest); err != nil {
-		return fmt.Errorf("saving manifest: %w", err)
+		return result, fmt.Errorf("saving manifest: %w", err)
 	}
-	return nil
+	return result, nil
 }
 
 // Rebuild clears the index and manifest, then re-indexes all YAML entities.
+// Malformed entities are skipped. Use RebuildWithResult to inspect warnings.
 func Rebuild(kgDir string) error {
+	_, err := RebuildWithResult(kgDir)
+	return err
+}
+
+// RebuildWithResult clears the index and re-indexes all entities, returning
+// detailed statistics. Malformed entities are skipped with warnings.
+func RebuildWithResult(kgDir string) (*SyncResult, error) {
+	result := &SyncResult{}
+
 	// Remove old index files for both backends.
 	boltPath := filepath.Join(kgDir, ".cache", "cayley.bolt")
 	if err := os.Remove(boltPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("removing bolt index: %w", err)
+		return nil, fmt.Errorf("removing bolt index: %w", err)
 	}
 	ladybugDir := filepath.Join(kgDir, ".cache", "ladybug")
 	if err := os.RemoveAll(ladybugDir); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("removing ladybug index: %w", err)
+		return nil, fmt.Errorf("removing ladybug index: %w", err)
 	}
 
 	idx, err := OpenIndex(kgDir)
 	if err != nil {
-		return fmt.Errorf("opening index: %w", err)
+		return nil, fmt.Errorf("opening index: %w", err)
 	}
 	defer idx.Close()
-
-	entities, err := ListEntities(kgDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			entities = nil
-		} else {
-			return fmt.Errorf("listing entities: %w", err)
-		}
-	}
 
 	manifest := &Manifest{
 		Version: 1,
 		Files:   make(map[string]FileEntry),
 	}
 
-	for _, e := range entities {
-		if err := idx.AddEntity(e); err != nil {
-			return fmt.Errorf("indexing %s: %w", e.ID, err)
+	// Walk files directly instead of using ListEntities so we can skip
+	// malformed files without aborting the entire rebuild.
+	entitiesDir := filepath.Join(kgDir, "entities")
+	err = filepath.WalkDir(entitiesDir, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if os.IsNotExist(walkErr) && path == entitiesDir {
+				return nil
+			}
+			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: %v", path, walkErr))
+			result.Skipped++
+			return nil
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".yaml") {
+			return nil
 		}
 
-		path := EntityPath(kgDir, e.ID)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: read: %v", path, err))
+			result.Skipped++
+			return nil
+		}
+
+		var e Entity
+		if err := yaml.Unmarshal(data, &e); err != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: parse: %v", path, err))
+			result.Skipped++
+			return nil
+		}
+
+		if err := idx.AddEntity(&e); err != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: index: %v", path, err))
+			result.Skipped++
+			return nil
+		}
+
 		rel, err := filepath.Rel(kgDir, path)
 		if err != nil {
-			return fmt.Errorf("computing relative path: %w", err)
+			// Entity indexed but can't track in manifest.
+			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: relative path: %v", path, err))
+			result.Synced++
+			return nil
 		}
 
 		checksum, err := fileChecksum(path)
 		if err != nil {
-			return fmt.Errorf("checksumming %s: %w", e.ID, err)
+			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: checksum: %v", path, err))
+			result.Synced++
+			return nil
 		}
 
 		info, err := os.Stat(path)
 		if err != nil {
-			return fmt.Errorf("stat %s: %w", e.ID, err)
+			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: stat: %v", path, err))
+			result.Synced++
+			return nil
 		}
 
 		manifest.Files[rel] = FileEntry{
 			Checksum: checksum,
 			ModTime:  info.ModTime(),
 		}
+		result.Synced++
+		return nil
+	})
+	if err != nil {
+		return result, fmt.Errorf("walking entities: %w", err)
 	}
 
 	manifest.SyncedAt = time.Now()
 	if err := SaveManifest(kgDir, manifest); err != nil {
-		return fmt.Errorf("saving manifest: %w", err)
+		return result, fmt.Errorf("saving manifest: %w", err)
 	}
-	return nil
+	return result, nil
 }
 
 // entityFromRelPath attempts to read an entity from a relative path within
