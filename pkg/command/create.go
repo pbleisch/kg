@@ -43,10 +43,11 @@ func parseAttrValue(attrType, raw string) (any, error) {
 }
 
 // Create builds and persists a new entity, returning the created entity.
-// The typeName is lowercased for the entity ID and PascalCased for the Type field.
+// The typeName and localID are normalized to snake_case.
 func Create(kgDir, typeName, localID string, attrs map[string]string) (*store.Entity, error) {
-	lowerType := strings.ToLower(typeName)
-	entityID := lowerType + ":" + localID
+	snakeType := store.ToSnakeCase(typeName)
+	snakeLocal := store.ToSnakeCase(localID)
+	entityID := snakeType + ":" + snakeLocal
 
 	// Check for duplicates.
 	if _, err := store.ReadEntity(kgDir, entityID); err == nil {
@@ -55,12 +56,12 @@ func Create(kgDir, typeName, localID string, attrs map[string]string) (*store.En
 
 	e := &store.Entity{
 		ID:         entityID,
-		Type:       pascalCase(lowerType),
+		Type:       snakeType,
 		Attributes: make(map[string]any, len(attrs)),
 	}
 
 	// If we have a schema, parse attribute values according to their types.
-	s, err := schema.LoadSchema(kgDir, lowerType)
+	s, err := schema.LoadSchema(kgDir, snakeType)
 	if err == nil {
 		for k, v := range attrs {
 			if def, ok := s.Attributes[k]; ok {
@@ -106,8 +107,9 @@ func Create(kgDir, typeName, localID string, attrs map[string]string) (*store.En
 // If the entity already exists, provided attributes overwrite existing ones
 // and relations are preserved.
 func Upsert(kgDir, typeName, localID string, attrs map[string]string) (*store.Entity, error) {
-	lowerType := strings.ToLower(typeName)
-	entityID := lowerType + ":" + localID
+	snakeType := store.ToSnakeCase(typeName)
+	snakeLocal := store.ToSnakeCase(localID)
+	entityID := snakeType + ":" + snakeLocal
 
 	existing, readErr := store.ReadEntity(kgDir, entityID)
 	if readErr != nil {
@@ -118,7 +120,7 @@ func Upsert(kgDir, typeName, localID string, attrs map[string]string) (*store.En
 		existing.Attributes = make(map[string]any)
 	}
 
-	s, err := schema.LoadSchema(kgDir, lowerType)
+	s, err := schema.LoadSchema(kgDir, snakeType)
 	if err == nil {
 		for k, v := range attrs {
 			if def, ok := s.Attributes[k]; ok {
@@ -160,6 +162,20 @@ func Upsert(kgDir, typeName, localID string, attrs map[string]string) (*store.En
 // full entity data. Attributes from e overwrite existing; relations are
 // merged additively (new targets appended, existing preserved).
 func UpsertEntity(kgDir string, e *store.Entity) (*store.Entity, error) {
+	// Normalize IDs and type before persisting.
+	e.ID = store.NormalizeEntityID(e.ID)
+	e.Type = store.ToSnakeCase(e.Type)
+	for rel, targets := range e.Relations {
+		normRel := store.NormalizeRelation(rel)
+		for i, t := range targets {
+			targets[i] = store.NormalizeEntityID(t)
+		}
+		if normRel != rel {
+			delete(e.Relations, rel)
+			e.Relations[normRel] = targets
+		}
+	}
+
 	existing, readErr := store.ReadEntity(kgDir, e.ID)
 	if readErr != nil {
 		if err := store.WriteEntity(kgDir, e); err != nil {
@@ -225,7 +241,8 @@ func ParseAttrs(args []string) (map[string]string, error) {
 	return m, nil
 }
 
-// pascalCase capitalises the first letter of s.
+// pascalCase is kept temporarily for backward compatibility in tests.
+// TODO: remove once all callers use ToSnakeCase.
 func pascalCase(s string) string {
 	if s == "" {
 		return s

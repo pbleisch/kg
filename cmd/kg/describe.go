@@ -7,16 +7,17 @@ import (
 
 	"github.com/pbleisch/kg/pkg/output"
 	"github.com/pbleisch/kg/pkg/schema"
+	"github.com/pbleisch/kg/pkg/store"
 	"github.com/spf13/cobra"
 )
 
 func init() {
 	cmd := &cobra.Command{
-		Use:   "describe <Type>",
+		Use:   "describe <type>",
 		Short: "Describe a schema type",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			typeName := args[0]
+			typeName := store.ToSnakeCase(args[0])
 			s, err := schema.LoadSchema(cfg.kgDir, typeName)
 			if err != nil {
 				return fmt.Errorf("loading schema %s: %w", typeName, err)

@@ -13,19 +13,19 @@ import (
 
 func init() {
 	cmd := &cobra.Command{
-		Use:   "similar <Type>",
+		Use:   "similar <type>",
 		Short: "Find entities similar to a query vector",
 		Long: `Find entities of a given type ranked by vector similarity.
 
 Requires the kg-ladybug binary (LadybugDB backend).
 
 Examples:
-  kg similar Document --vector "0.1,0.2,0.3" --field embedding
-  kg similar Document --like doc:intro --field embedding --top 5
-  kg similar Document --vector-file query.vec --field title,body --metric cosine --top 20`,
+  kg similar document --vector "0.1,0.2,0.3" --field embedding
+  kg similar document --like doc:intro --field embedding --top 5
+  kg similar document --vector-file query.vec --field title,body --metric cosine --top 20`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			typeName := args[0]
+			typeName := store.ToSnakeCase(args[0])
 
 			vectorStr, _ := cmd.Flags().GetString("vector")
 			vectorFile, _ := cmd.Flags().GetString("vector-file")
@@ -64,7 +64,7 @@ Examples:
 			case vectorFile != "":
 				vec, err = query.LoadVectorFile(vectorFile)
 			case likeID != "":
-				vec, err = vectorFromEntity(cfg.kgDir, likeID, fields)
+				vec, err = vectorFromEntity(cfg.kgDir, store.NormalizeEntityID(likeID), fields)
 			}
 			if err != nil {
 				return err

@@ -7,6 +7,7 @@ import (
 
 "github.com/pbleisch/kg/pkg/output"
 "github.com/pbleisch/kg/pkg/query"
+"github.com/pbleisch/kg/pkg/store"
 "github.com/spf13/cobra"
 )
 
@@ -16,7 +17,7 @@ Use:   "back <id> [via <rel>]",
 Short: "Find entities that reference the given entity",
 Args:  cobra.MinimumNArgs(1),
 RunE: func(cmd *cobra.Command, args []string) error {
-targetID := args[0]
+targetID := store.NormalizeEntityID(args[0])
 var relation string
 
 rest := args[1:]
@@ -27,7 +28,7 @@ rest = rest[1:]
 if len(rest) == 0 {
 return fmt.Errorf("missing relation name after 'via'")
 }
-relation = rest[0]
+relation = store.NormalizeRelation(rest[0])
 }
 
 if relation == "" {

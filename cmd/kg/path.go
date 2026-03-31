@@ -6,6 +6,7 @@ import (
 
 "github.com/pbleisch/kg/pkg/output"
 "github.com/pbleisch/kg/pkg/query"
+"github.com/pbleisch/kg/pkg/store"
 "github.com/spf13/cobra"
 )
 
@@ -15,7 +16,7 @@ Use:   "path <id> [-> <rel>]...",
 Short: "Traverse forward relations from an entity",
 Args:  cobra.MinimumNArgs(1),
 RunE: func(cmd *cobra.Command, args []string) error {
-startID := args[0]
+startID := store.NormalizeEntityID(args[0])
 
 var steps []query.PathStep
 i := 1
@@ -35,7 +36,7 @@ if i >= len(args) {
 return fmt.Errorf("missing relation name after %s", arrow)
 }
 steps = append(steps, query.PathStep{
-Relation:  args[i],
+Relation:  store.NormalizeRelation(args[i]),
 Recursive: recursive,
 })
 i++

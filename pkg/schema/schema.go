@@ -41,8 +41,10 @@ func (e ValidationError) Error() string {
 }
 
 // LoadSchema loads a single schema file from <kgDir>/schema/<typeName>.yaml.
+// The typeName is normalized to snake_case before looking up the file.
 func LoadSchema(kgDir, typeName string) (*Schema, error) {
-	path := filepath.Join(kgDir, "schema", typeName+".yaml")
+	norm := store.ToSnakeCase(typeName)
+	path := filepath.Join(kgDir, "schema", norm+".yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("loading schema %s: %w", typeName, err)

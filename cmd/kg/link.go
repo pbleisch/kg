@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/pbleisch/kg/pkg/command"
+	"github.com/pbleisch/kg/pkg/store"
 	"github.com/spf13/cobra"
 )
 
@@ -13,11 +14,14 @@ func init() {
 		Short: "Link two entities",
 		Args:  cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := command.Link(cfg.kgDir, args[0], args[1], args[2]); err != nil {
+			src := store.NormalizeEntityID(args[0])
+			rel := store.NormalizeRelation(args[1])
+			tgt := store.NormalizeEntityID(args[2])
+			if err := command.Link(cfg.kgDir, src, rel, tgt); err != nil {
 				return err
 			}
 			if !cfg.quiet {
-				fmt.Printf("linked %s -[%s]-> %s\n", args[0], args[1], args[2])
+				fmt.Printf("linked %s -[%s]-> %s\n", src, rel, tgt)
 			}
 			return nil
 		},

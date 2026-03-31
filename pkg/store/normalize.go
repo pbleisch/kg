@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -114,12 +113,12 @@ func normalizeLinksKey(raw map[string]interface{}, result *NormalizeResult) {
 	})
 }
 
-// normalizeID ensures the id field is present and has a lowercase type prefix.
+// normalizeID ensures the id field is present and has snake_case type prefix and local ID.
 func normalizeID(raw map[string]interface{}, dirType, localFromFile string, result *NormalizeResult) {
 	idVal, _ := raw["id"].(string)
 
 	if idVal == "" {
-		idVal = dirType + ":" + localFromFile
+		idVal = ToSnakeCase(dirType) + ":" + ToSnakeCase(localFromFile)
 		raw["id"] = idVal
 		result.Fixes = append(result.Fixes, Fix{
 			Field: "id", Message: fmt.Sprintf("set missing id to %s", idVal),
@@ -130,7 +129,7 @@ func normalizeID(raw map[string]interface{}, dirType, localFromFile string, resu
 	typePart, localPart, err := ParseEntityID(idVal)
 	if err != nil {
 		// No colon — treat as bare local ID, add type prefix from directory.
-		normalized := dirType + ":" + idVal
+		normalized := ToSnakeCase(dirType) + ":" + ToSnakeCase(idVal)
 		raw["id"] = normalized
 		result.Fixes = append(result.Fixes, Fix{
 			Field: "id", Message: fmt.Sprintf("added type prefix: %s → %s", idVal, normalized),
@@ -138,22 +137,21 @@ func normalizeID(raw map[string]interface{}, dirType, localFromFile string, resu
 		return
 	}
 
-	lower := strings.ToLower(typePart)
-	if lower != typePart {
-		normalized := lower + ":" + localPart
+	normalized := ToSnakeCase(typePart) + ":" + ToSnakeCase(localPart)
+	if normalized != idVal {
 		raw["id"] = normalized
 		result.Fixes = append(result.Fixes, Fix{
-			Field: "id", Message: fmt.Sprintf("lowercased id type: %s → %s", idVal, normalized),
+			Field: "id", Message: fmt.Sprintf("normalized id: %s → %s", idVal, normalized),
 		})
 	}
 }
 
-// normalizeType ensures the type field is PascalCase.
+// normalizeType ensures the type field is snake_case.
 func normalizeType(raw map[string]interface{}, dirType string, result *NormalizeResult) {
 	typeVal, _ := raw["type"].(string)
 
 	if typeVal == "" {
-		typeVal = normPascalCase(dirType)
+		typeVal = ToSnakeCase(dirType)
 		raw["type"] = typeVal
 		result.Fixes = append(result.Fixes, Fix{
 			Field: "type", Message: fmt.Sprintf("set missing type to %s", typeVal),
@@ -161,7 +159,7 @@ func normalizeType(raw map[string]interface{}, dirType string, result *Normalize
 		return
 	}
 
-	normalized := normPascalCase(strings.ToLower(typeVal))
+	normalized := ToSnakeCase(typeVal)
 	if normalized != typeVal {
 		raw["type"] = normalized
 		result.Fixes = append(result.Fixes, Fix{
@@ -170,14 +168,30 @@ func normalizeType(raw map[string]interface{}, dirType string, result *Normalize
 	}
 }
 
-// normalizeRelationTargets ensures all relation target IDs have lowercase type prefixes.
+// normalizeRelationTargets ensures all relation target IDs are snake_case
+// and normalizes relation key names to snake_case.
 func normalizeRelationTargets(raw map[string]interface{}, result *NormalizeResult) {
 	rels := asStringMapIface(raw["relations"])
 	if rels == nil {
 		return
 	}
 
+	// Collect renames to avoid modifying map during iteration.
+	type rename struct{ old, new string }
+	var renames []rename
+
 	for relName, targets := range rels {
+		// Normalize relation key name.
+		normRel := ToSnakeCase(relName)
+		if normRel != relName {
+			renames = append(renames, rename{relName, normRel})
+			result.Fixes = append(result.Fixes, Fix{
+				Field:   fmt.Sprintf("relations.%s", relName),
+				Message: fmt.Sprintf("normalized relation key: %s → %s", relName, normRel),
+			})
+		}
+
+		// Normalize target IDs.
 		targetList, ok := targets.([]interface{})
 		if !ok {
 			continue
@@ -187,19 +201,29 @@ func normalizeRelationTargets(raw map[string]interface{}, result *NormalizeResul
 			if !ok {
 				continue
 			}
-			tp, lp, err := ParseEntityID(s)
-			if err != nil {
-				continue
-			}
-			lower := strings.ToLower(tp)
-			if lower != tp {
-				normalized := lower + ":" + lp
+			normalized := NormalizeEntityID(s)
+			if normalized != s {
 				targetList[i] = normalized
 				result.Fixes = append(result.Fixes, Fix{
 					Field:   fmt.Sprintf("relations.%s", relName),
-					Message: fmt.Sprintf("lowercased target type: %s → %s", s, normalized),
+					Message: fmt.Sprintf("normalized target: %s → %s", s, normalized),
 				})
 			}
+		}
+	}
+
+	// Apply relation key renames.
+	for _, r := range renames {
+		targets := rels[r.old]
+		delete(rels, r.old)
+		if existing, ok := rels[r.new]; ok {
+			// Merge into existing key.
+			mergeRelMaps(
+				map[string]interface{}{r.new: existing},
+				map[string]interface{}{r.new: targets},
+			)
+		} else {
+			rels[r.new] = targets
 		}
 	}
 }
@@ -280,14 +304,4 @@ func removeEmptyDir(dir string) {
 		return
 	}
 	os.Remove(dir)
-}
-
-// normPascalCase capitalizes the first letter of s.
-func normPascalCase(s string) string {
-	if s == "" {
-		return s
-	}
-	r := []rune(s)
-	r[0] = unicode.ToUpper(r[0])
-	return string(r)
 }

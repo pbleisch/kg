@@ -5,6 +5,7 @@ import (
 
 	"github.com/pbleisch/kg/pkg/command"
 	"github.com/pbleisch/kg/pkg/output"
+	"github.com/pbleisch/kg/pkg/store"
 	"github.com/spf13/cobra"
 )
 
@@ -18,7 +19,7 @@ func init() {
 			if err != nil {
 				return err
 			}
-			e, err := command.Set(cfg.kgDir, args[0], attrs)
+			e, err := command.Set(cfg.kgDir, store.NormalizeEntityID(args[0]), attrs)
 			if err != nil {
 				return err
 			}

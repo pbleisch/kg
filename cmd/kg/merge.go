@@ -7,6 +7,7 @@ import (
 
 	"github.com/pbleisch/kg/pkg/command"
 	"github.com/pbleisch/kg/pkg/output"
+	"github.com/pbleisch/kg/pkg/store"
 	"github.com/spf13/cobra"
 )
 
@@ -30,7 +31,7 @@ are rewritten to point to target. The source entity is then deleted.`,
 				CrossType:    crossType,
 			}
 
-			result, err := command.Merge(cfg.kgDir, args[0], args[1], opts)
+			result, err := command.Merge(cfg.kgDir, store.NormalizeEntityID(args[0]), store.NormalizeEntityID(args[1]), opts)
 			if err != nil {
 				return err
 			}

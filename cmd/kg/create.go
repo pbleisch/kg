@@ -11,7 +11,7 @@ import (
 
 func init() {
 	cmd := &cobra.Command{
-		Use:   "create <Type> <localID> [attr=val...]",
+		Use:   "create <type> <localID> [attr=val...]",
 		Short: "Create a new entity",
 		Args:  cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {

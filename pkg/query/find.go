@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/pbleisch/kg/pkg/schema"
 	"github.com/pbleisch/kg/pkg/store"
@@ -42,6 +41,7 @@ func ParseFilter(expr string) (Filter, error) {
 }
 
 // Find searches for entities of the given type that match all filters.
+// The typeName is expected to be snake_case (normalized at the CLI edge).
 func Find(kgDir, typeName string, filters []Filter) ([]*store.Entity, error) {
 	if err := store.Sync(kgDir); err != nil {
 		return nil, fmt.Errorf("syncing index: %w", err)
@@ -68,16 +68,6 @@ func Find(kgDir, typeName string, filters []Filter) ([]*store.Entity, error) {
 						break
 					}
 				}
-			}
-		}
-	}
-
-	// Fallback: try pascal-casing the provided type name.
-	if len(ids) == 0 {
-		p := pascalCase(typeName)
-		if p != "" && p != typeName {
-			if ids2, err2 := idx.FindByType(p); err2 == nil && len(ids2) > 0 {
-				ids = ids2
 			}
 		}
 	}
@@ -143,14 +133,4 @@ func compareNumeric(attrStr, op, filterVal string) bool {
 		return a <= b
 	}
 	return false
-}
-
-// pascalCase capitalises the first rune of s.
-func pascalCase(s string) string {
-	if s == "" {
-		return s
-	}
-	r := []rune(s)
-	r[0] = unicode.ToUpper(r[0])
-	return string(r)
 }

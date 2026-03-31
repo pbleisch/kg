@@ -5,6 +5,7 @@ import (
 
 "github.com/pbleisch/kg/pkg/output"
 "github.com/pbleisch/kg/pkg/query"
+"github.com/pbleisch/kg/pkg/store"
 "github.com/spf13/cobra"
 )
 
@@ -14,7 +15,7 @@ Use:   "get <type:id>",
 Short: "Get a single entity by ID",
 Args:  cobra.ExactArgs(1),
 RunE: func(cmd *cobra.Command, args []string) error {
-e, err := query.Get(cfg.kgDir, args[0])
+e, err := query.Get(cfg.kgDir, store.NormalizeEntityID(args[0]))
 if err != nil {
 return err
 }

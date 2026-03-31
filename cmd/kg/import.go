@@ -42,6 +42,21 @@ func init() {
 				return fmt.Errorf("entity missing type")
 			}
 
+			// Normalize IDs and type to snake_case.
+			e.ID = store.NormalizeEntityID(e.ID)
+			e.Type = store.ToSnakeCase(e.Type)
+			if e.Relations != nil {
+				normed := make(map[string][]string, len(e.Relations))
+				for rel, targets := range e.Relations {
+					nTargets := make([]string, len(targets))
+					for i, t := range targets {
+						nTargets[i] = store.NormalizeEntityID(t)
+					}
+					normed[store.NormalizeRelation(rel)] = nTargets
+				}
+				e.Relations = normed
+			}
+
 			// Validate against schema if present.
 			parts := strings.SplitN(e.ID, ":", 2)
 			if len(parts) >= 1 {

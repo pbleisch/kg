@@ -33,8 +33,8 @@ func TestCreate(t *testing.T) {
 	if e.ID != "person:charlie" {
 		t.Errorf("ID = %q, want %q", e.ID, "person:charlie")
 	}
-	if e.Type != "Person" {
-		t.Errorf("Type = %q, want %q", e.Type, "Person")
+	if e.Type != "person" {
+		t.Errorf("Type = %q, want %q", e.Type, "person")
 	}
 	if e.Attributes["name"] != "Charlie Davis" {
 		t.Errorf("name = %v, want %q", e.Attributes["name"], "Charlie Davis")

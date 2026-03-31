@@ -7,16 +7,17 @@ import (
 
 "github.com/pbleisch/kg/pkg/output"
 "github.com/pbleisch/kg/pkg/query"
+"github.com/pbleisch/kg/pkg/store"
 "github.com/spf13/cobra"
 )
 
 func init() {
 cmd := &cobra.Command{
-Use:   "find <Type> [where <filters...>]",
+Use:   "find <type> [where <filters...>]",
 Short: "Find entities by type with optional filters",
 Args:  cobra.MinimumNArgs(1),
 RunE: func(cmd *cobra.Command, args []string) error {
-typeName := args[0]
+typeName := store.ToSnakeCase(args[0])
 
 var filters []query.Filter
 rest := args[1:]

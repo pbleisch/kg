@@ -31,7 +31,7 @@ func findFix(result *NormalizeResult, field string) *Fix {
 func TestNormalize_AlreadyNormalized(t *testing.T) {
 	kgDir := t.TempDir()
 	path := writeTestEntity(t, kgDir, "person", "alice.yaml", `id: person:alice
-type: Person
+type: person
 attributes:
   name: Alice
 relations:
@@ -51,7 +51,7 @@ relations:
 func TestNormalize_LinksToRelations(t *testing.T) {
 	kgDir := t.TempDir()
 	path := writeTestEntity(t, kgDir, "person", "alice.yaml", `id: person:alice
-type: Person
+type: person
 attributes:
   name: Alice
 links:
@@ -93,6 +93,9 @@ attributes:
 	if f := findFix(result, "id"); f == nil {
 		t.Error("expected id normalization fix")
 	}
+	if f := findFix(result, "type"); f == nil {
+		t.Error("expected type normalization fix")
+	}
 
 	e, err := ReadEntity(kgDir, "person:alice")
 	if err != nil {
@@ -105,7 +108,7 @@ attributes:
 
 func TestNormalize_MissingID(t *testing.T) {
 	kgDir := t.TempDir()
-	path := writeTestEntity(t, kgDir, "person", "alice.yaml", `type: Person
+	path := writeTestEntity(t, kgDir, "person", "alice.yaml", `type: person
 attributes:
   name: Alice
 `)
@@ -126,7 +129,7 @@ attributes:
 func TestNormalize_BareID(t *testing.T) {
 	kgDir := t.TempDir()
 	path := writeTestEntity(t, kgDir, "person", "alice.yaml", `id: alice
-type: Person
+type: person
 attributes:
   name: Alice
 `)
@@ -165,8 +168,8 @@ attributes:
 	if err != nil {
 		t.Fatalf("reading normalized entity: %v", err)
 	}
-	if e.Type != "Person" {
-		t.Errorf("expected type Person, got %s", e.Type)
+	if e.Type != "person" {
+		t.Errorf("expected type person, got %s", e.Type)
 	}
 }
 
@@ -190,15 +193,15 @@ attributes:
 	if err != nil {
 		t.Fatalf("reading normalized entity: %v", err)
 	}
-	if e.Type != "Person" {
-		t.Errorf("expected type Person, got %s", e.Type)
+	if e.Type != "person" {
+		t.Errorf("expected type person, got %s", e.Type)
 	}
 }
 
 func TestNormalize_RelationTargetCasing(t *testing.T) {
 	kgDir := t.TempDir()
 	path := writeTestEntity(t, kgDir, "person", "alice.yaml", `id: person:alice
-type: Person
+type: person
 relations:
   knows:
     - Person:bob
@@ -235,7 +238,7 @@ func TestNormalize_FileMove(t *testing.T) {
 	kgDir := t.TempDir()
 	// Entity id says person:alice but file is in wrong directory
 	path := writeTestEntity(t, kgDir, "people", "alice.yaml", `id: person:alice
-type: Person
+type: person
 attributes:
   name: Alice
 `)
@@ -290,8 +293,8 @@ links:
 	if e.ID != "person:alice" {
 		t.Errorf("expected id person:alice, got %s", e.ID)
 	}
-	if e.Type != "Person" {
-		t.Errorf("expected type Person, got %s", e.Type)
+	if e.Type != "person" {
+		t.Errorf("expected type person, got %s", e.Type)
 	}
 	if len(e.Relations["knows"]) != 1 || e.Relations["knows"][0] != "person:bob" {
 		t.Errorf("expected relations.knows=[person:bob], got %v", e.Relations)
@@ -301,7 +304,7 @@ links:
 func TestNormalize_BothLinksAndRelations(t *testing.T) {
 	kgDir := t.TempDir()
 	path := writeTestEntity(t, kgDir, "person", "alice.yaml", `id: person:alice
-type: Person
+type: person
 relations:
   knows:
     - person:bob
@@ -334,7 +337,7 @@ links:
 func TestNormalize_PreservesAttributes(t *testing.T) {
 	kgDir := t.TempDir()
 	path := writeTestEntity(t, kgDir, "person", "alice.yaml", `id: Person:alice
-type: Person
+type: person
 attributes:
   name: Alice
   age: 30

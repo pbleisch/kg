@@ -118,6 +118,9 @@ func init() {
 			}
 
 			// Execute actions sequentially.
+			for i := range m.Actions {
+				normalizeAction(&m.Actions[i])
+			}
 			for _, a := range m.Actions {
 				switch strings.ToLower(a.Action) {
 				case "create":
@@ -246,4 +249,36 @@ func init() {
 	cmd.Flags().Bool("dry-run", false, "Simulate the manifest without applying changes")
 	cmd.Flags().String("on-conflict", "fail", "Behavior when conflicts are encountered: fail, skip, merge")
 	rootCmd.AddCommand(cmd)
+}
+
+// normalizeAction applies snake_case normalization to all IDs and relation
+// names in an action before dispatch.
+func normalizeAction(a *Action) {
+	if a.Entity != nil {
+		a.Entity.ID = store.NormalizeEntityID(a.Entity.ID)
+		a.Entity.Type = store.ToSnakeCase(a.Entity.Type)
+		if a.Entity.Relations != nil {
+			normed := make(map[string][]string, len(a.Entity.Relations))
+			for rel, targets := range a.Entity.Relations {
+				nTargets := make([]string, len(targets))
+				for i, t := range targets {
+					nTargets[i] = store.NormalizeEntityID(t)
+				}
+				normed[store.NormalizeRelation(rel)] = nTargets
+			}
+			a.Entity.Relations = normed
+		}
+	}
+	if a.Target != "" {
+		a.Target = store.NormalizeEntityID(a.Target)
+	}
+	if a.From != "" {
+		a.From = store.NormalizeEntityID(a.From)
+	}
+	if a.To != "" {
+		a.To = store.NormalizeEntityID(a.To)
+	}
+	if a.Rel != "" {
+		a.Rel = store.NormalizeRelation(a.Rel)
+	}
 }
