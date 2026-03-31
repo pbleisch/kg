@@ -13,8 +13,8 @@ kg embed --init
 # 2. Install Python dependencies
 pip install -r .kg/scripts/requirements.txt
 
-# 3. Generate embeddings for all entities
-kg embed
+# 3. Sync — embeddings are generated automatically
+kg sync
 
 # 4. Search by similarity
 kg similar person --field name --like person:alice
@@ -24,10 +24,11 @@ kg similar person --field name --like person:alice
 
 1. You configure which attributes to embed and an external command in
    `.kg/config.yaml`.
-2. `kg embed` computes a content checksum for each configured attribute
-   on each entity. If the text has changed since the last embedding, it
-   sends the text to your command and stores the returned vector as a
-   `<field>_embedding` attribute on the entity.
+2. When you run `kg sync`, after indexing YAML files, kg computes a
+   content checksum for each configured attribute on each entity. If the
+   text has changed since the last embedding, it sends the text to your
+   command and stores the returned vector as a `<field>_embedding`
+   attribute on the entity.
 3. `kg similar` uses these stored vectors for cosine/dot-product search.
 
 Embeddings are tracked in `.cache/embed-manifest.json` so unchanged
@@ -44,7 +45,6 @@ embedding:
   command: "python3 .kg/scripts/embed.py"
   fields: [name, description]
   batch: true
-  auto: false
 ```
 
 | Field     | Required | Description |
@@ -52,13 +52,27 @@ embedding:
 | `command` | yes      | External command to run (receives JSON on stdin) |
 | `fields`  | yes      | Entity attributes to embed |
 | `batch`   | no       | Use batch protocol (default: false) |
-| `auto`    | no       | Auto-embed after create/set/merge (default: false) |
 
-## Commands
+## Sync-Integrated Embedding
 
-### `kg embed`
+Embeddings run automatically as the final step of `kg sync` and
+`kg sync --rebuild`. If embedding is configured, sync will:
 
-Generate embeddings for all entities with stale or missing vectors.
+1. Index all YAML files (the normal sync pass).
+2. Detect entities with stale or missing embeddings.
+3. Call the external command to generate vectors.
+4. Write the embedding attributes back to YAML files.
+
+The sync output reports how many entities were embedded:
+
+```
+sync complete: 42 synced, 10 embedded
+```
+
+Embedding failures are best-effort — they produce warnings but don't
+fail the sync.
+
+You can also run `kg embed` directly as an escape hatch:
 
 ```bash
 kg embed              # embed stale entities
@@ -66,32 +80,6 @@ kg embed --rebuild    # force re-embed everything
 kg embed --dry-run    # show what would be embedded
 kg embed --json       # JSON output
 ```
-
-### `kg embed --init`
-
-Scaffold a working embedding setup:
-
-- Creates `.kg/scripts/embed.py` (uses `sentence-transformers` all-MiniLM-L6-v2)
-- Creates `.kg/scripts/requirements.txt`
-- Adds `embedding:` config to `.kg/config.yaml`
-
-The default script runs locally on CPU with no API key needed. First run
-downloads ~80MB model.
-
-## Auto-Embedding
-
-When `auto: true`, embeddings are automatically generated after these
-commands modify entity content:
-
-- `kg create` / `kg create --upsert`
-- `kg set`
-- `kg merge`
-- `kg apply` (for create/upsert/set/merge actions)
-
-Only the affected entity is re-embedded, not the whole graph.
-
-Commands that only change relations (`kg link`, `kg unlink`) or remove
-entities (`kg delete`) do not trigger auto-embedding.
 
 ## External Command Protocol
 

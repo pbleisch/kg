@@ -127,7 +127,6 @@ func Merge(kgDir, sourceID, targetID string, opts MergeOptions) (*MergeResult, e
 		return nil, fmt.Errorf("syncing index: %w", err)
 	}
 
-	store.AutoEmbed(kgDir, targetID)
 	return result, nil
 }
 

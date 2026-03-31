@@ -99,7 +99,6 @@ func Create(kgDir, typeName, localID string, attrs map[string]string) (*store.En
 		return nil, fmt.Errorf("syncing index: %w", err)
 	}
 
-	store.AutoEmbed(kgDir, e.ID)
 	return e, nil
 }
 
@@ -154,7 +153,6 @@ func Upsert(kgDir, typeName, localID string, attrs map[string]string) (*store.En
 	if err := store.Sync(kgDir); err != nil {
 		return nil, fmt.Errorf("syncing index: %w", err)
 	}
-	store.AutoEmbed(kgDir, existing.ID)
 	return existing, nil
 }
 
@@ -184,7 +182,6 @@ func UpsertEntity(kgDir string, e *store.Entity) (*store.Entity, error) {
 		if err := store.Sync(kgDir); err != nil {
 			return nil, fmt.Errorf("syncing index: %w", err)
 		}
-		store.AutoEmbed(kgDir, e.ID)
 		return e, nil
 	}
 
@@ -214,7 +211,6 @@ func UpsertEntity(kgDir string, e *store.Entity) (*store.Entity, error) {
 	if err := store.Sync(kgDir); err != nil {
 		return nil, fmt.Errorf("syncing index: %w", err)
 	}
-	store.AutoEmbed(kgDir, existing.ID)
 	return existing, nil
 }
 

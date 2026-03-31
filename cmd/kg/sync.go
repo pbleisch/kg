@@ -39,9 +39,15 @@ func init() {
 				if rebuild {
 					action = "rebuild"
 				}
-				if result.Skipped > 0 {
-					fmt.Fprintf(cmd.OutOrStdout(), "%s complete: %d synced, %d skipped\n",
-						action, result.Synced, result.Skipped)
+				if result.Skipped > 0 || result.Embedded > 0 {
+					parts := fmt.Sprintf("%s complete: %d synced", action, result.Synced)
+					if result.Embedded > 0 {
+						parts += fmt.Sprintf(", %d embedded", result.Embedded)
+					}
+					if result.Skipped > 0 {
+						parts += fmt.Sprintf(", %d skipped", result.Skipped)
+					}
+					fmt.Fprintln(cmd.OutOrStdout(), parts)
 					for _, w := range result.Warnings {
 						fmt.Fprintf(os.Stderr, "  warning: %s\n", w)
 					}

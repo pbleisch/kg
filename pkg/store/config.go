@@ -20,7 +20,6 @@ type EmbeddingConfig struct {
 	Command string   `yaml:"command"`          // external command to run
 	Fields  []string `yaml:"fields"`           // entity attributes to embed
 	Batch   bool     `yaml:"batch,omitempty"`  // use batch protocol
-	Auto    bool     `yaml:"auto,omitempty"`   // auto-run after mutations
 }
 
 // LoadConfig reads and returns the full config from .kg/config.yaml.

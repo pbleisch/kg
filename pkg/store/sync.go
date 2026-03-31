@@ -113,6 +113,7 @@ type SyncResult struct {
 	Synced   int      `json:"synced"`
 	Skipped  int      `json:"skipped"`
 	Removed  int      `json:"removed"`
+	Embedded int      `json:"embedded,omitempty"`
 	Warnings []string `json:"warnings,omitempty"`
 }
 
@@ -228,6 +229,10 @@ func SyncWithResult(kgDir string) (*SyncResult, error) {
 	if err := SaveManifest(kgDir, manifest); err != nil {
 		return result, fmt.Errorf("saving manifest: %w", err)
 	}
+
+	// Run embedding pass if configured (best-effort).
+	result.Embedded = syncEmbed(kgDir, false)
+
 	return result, nil
 }
 
@@ -337,7 +342,25 @@ func RebuildWithResult(kgDir string) (*SyncResult, error) {
 	if err := SaveManifest(kgDir, manifest); err != nil {
 		return result, fmt.Errorf("saving manifest: %w", err)
 	}
+
+	// Run embedding pass if configured — rebuild embeddings too.
+	result.Embedded = syncEmbed(kgDir, true)
+
 	return result, nil
+}
+
+// syncEmbed runs an embed pass as part of sync. Returns count of entities
+// embedded. Best-effort: embedding failures don't fail the sync.
+func syncEmbed(kgDir string, rebuild bool) int {
+	cfg, err := LoadConfig(kgDir)
+	if err != nil || cfg.Embedding == nil || cfg.Embedding.Command == "" {
+		return 0
+	}
+	embedResult, err := Embed(kgDir, rebuild, false)
+	if err != nil || embedResult == nil {
+		return 0
+	}
+	return embedResult.Embedded
 }
 
 // entityFromRelPath attempts to read an entity from a relative path within

@@ -242,21 +242,5 @@ func Embed(kgDir string, rebuild bool, dryRun bool, entityIDs ...string) (*Embed
 		return result, fmt.Errorf("saving embed manifest: %w", err)
 	}
 
-	// Sync index after writing embedding attributes.
-	if result.Embedded > 0 {
-		_ = Sync(kgDir)
-	}
-
 	return result, nil
-}
-
-// AutoEmbed runs embedding for the given entity IDs if auto-embedding is
-// configured. Returns nil silently if embedding is not configured.
-func AutoEmbed(kgDir string, entityIDs ...string) {
-	cfg, err := LoadConfig(kgDir)
-	if err != nil || cfg.Embedding == nil || !cfg.Embedding.Auto {
-		return
-	}
-	// Best-effort: don't fail the parent command if embedding fails.
-	_, _ = Embed(kgDir, false, false, entityIDs...)
 }
