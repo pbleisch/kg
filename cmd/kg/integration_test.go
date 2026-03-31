@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -264,5 +265,84 @@ func TestFullWorkflow(t *testing.T) {
 	_, err = runCmd(t, "get", "person:alice", "--dir="+dir)
 	if err == nil {
 		t.Fatal("expected error getting deleted entity, got nil")
+	}
+}
+
+func TestEmbedInit(t *testing.T) {
+	dir := initKG(t)
+
+	out, err := runCmd(t, "embed", "--init", "--dir="+dir)
+	if err != nil {
+		t.Fatalf("embed --init: %v", err)
+	}
+	if !strings.Contains(out, "Embedding setup scaffolded") {
+		t.Errorf("expected scaffolded message, got: %q", out)
+	}
+
+	// Verify script was created.
+	scriptPath := filepath.Join(dir, "scripts", "embed.py")
+	if _, err := os.Stat(scriptPath); err != nil {
+		t.Fatalf("embed.py not created: %v", err)
+	}
+
+	// Verify requirements.txt was created.
+	reqPath := filepath.Join(dir, "scripts", "requirements.txt")
+	data, err := os.ReadFile(reqPath)
+	if err != nil {
+		t.Fatalf("requirements.txt not created: %v", err)
+	}
+	if !strings.Contains(string(data), "sentence-transformers") {
+		t.Errorf("requirements.txt missing sentence-transformers: %q", string(data))
+	}
+
+	// Verify config.yaml was updated with embedding section.
+	cfgData, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatalf("reading config.yaml: %v", err)
+	}
+	cfgStr := string(cfgData)
+	if !strings.Contains(cfgStr, "embedding:") {
+		t.Error("config.yaml missing 'embedding:' section")
+	}
+	if !strings.Contains(cfgStr, "command:") {
+		t.Error("config.yaml missing 'command:' in embedding section")
+	}
+	if strings.Contains(cfgStr, "auto:") {
+		t.Error("config.yaml should not contain 'auto:' field")
+	}
+	// Commented-out embedding lines should have been removed.
+	if strings.Contains(cfgStr, "# embedding:") {
+		t.Error("config.yaml still has commented-out embedding block")
+	}
+
+	// Verify the generated script is syntactically valid Python.
+	scriptData, _ := os.ReadFile(scriptPath)
+	script := string(scriptData)
+	if !strings.Contains(script, "SentenceTransformer") {
+		t.Error("embed.py missing SentenceTransformer reference")
+	}
+	if !strings.Contains(script, "json.load") {
+		t.Error("embed.py missing json.load (stdin reading)")
+	}
+
+	// Running --init again should fail (script already exists).
+	_, err = runCmd(t, "embed", "--init", "--dir="+dir)
+	if err == nil {
+		t.Fatal("expected error on second embed --init")
+	}
+}
+
+func TestEmbedInitScriptSyntax(t *testing.T) {
+	dir := initKG(t)
+	runCmd(t, "embed", "--init", "--dir="+dir)
+
+	scriptPath := filepath.Join(dir, "scripts", "embed.py")
+
+	// Check Python syntax if python3 is available.
+	cmd := exec.Command("python3", "-c",
+		"import ast; ast.parse(open('"+scriptPath+"').read())")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("embed.py has syntax errors: %s\n%s", err, string(out))
 	}
 }

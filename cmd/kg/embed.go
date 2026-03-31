@@ -152,8 +152,8 @@ func runEmbedInit(cmd *cobra.Command) error {
 				strings.HasPrefix(trimmed, "#   command:") ||
 				strings.HasPrefix(trimmed, "#   fields:") ||
 				strings.HasPrefix(trimmed, "#   batch:") ||
-				strings.HasPrefix(trimmed, "#   auto:") ||
-				trimmed == "# Run 'kg embed --init' to scaffold a working setup automatically." {
+				trimmed == "# Run 'kg embed --init' to scaffold a working setup automatically." ||
+				trimmed == "# Embeddings run automatically during 'kg sync'." {
 				continue
 			}
 			cleaned = append(cleaned, line)
@@ -164,12 +164,11 @@ func runEmbedInit(cmd *cobra.Command) error {
 		relScript, _ := filepath.Rel(filepath.Dir(configPath), scriptPath)
 
 		content += fmt.Sprintf(`
-# Embedding configuration
+# Embedding configuration (runs automatically during kg sync)
 embedding:
   command: "python3 %s"
   fields: [name, description]
   batch: true
-  auto: false
 `, relScript)
 
 		if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
