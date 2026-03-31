@@ -17,7 +17,7 @@ pip install -r .kg/scripts/requirements.txt
 kg embed
 
 # 4. Search by similarity
-kg similar Person --field name --like person:alice
+kg similar person --field name --like person:alice
 ```
 
 ## How It Works
@@ -105,7 +105,7 @@ Your embedding command receives JSON on stdin and must write JSON to stdout.
   "text": "Alice Smith",
   "field": "name",
   "entity_id": "person:alice",
-  "type": "Person"
+  "type": "person"
 }
 ```
 
@@ -120,8 +120,8 @@ Your embedding command receives JSON on stdin and must write JSON to stdout.
 ```json
 {
   "items": [
-    {"text": "Alice Smith", "field": "name", "entity_id": "person:alice", "type": "Person"},
-    {"text": "Bob Jones", "field": "name", "entity_id": "person:bob", "type": "Person"}
+    {"text": "Alice Smith", "field": "name", "entity_id": "person:alice", "type": "person"},
+    {"text": "Bob Jones", "field": "name", "entity_id": "person:bob", "type": "person"}
   ]
 }
 ```
@@ -166,7 +166,7 @@ Vectors are stored as entity attributes with the `_embedding` suffix:
 
 ```yaml
 id: person:alice
-type: Person
+type: person
 attributes:
   name: Alice Smith
   name_embedding: [0.1, 0.2, 0.3, ...]

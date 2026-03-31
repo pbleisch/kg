@@ -62,7 +62,7 @@ All writes go to YAML first, then sync to the index. All reads come from the ind
 ```yaml
 # .kg/entities/person/alice.yaml
 id: person:alice
-type: Person
+type: person
 attributes:
   name: Alice Chen
   role: Engineer
@@ -80,7 +80,7 @@ Schemas provide structure hints for agents and enable validation/completion. The
 
 ```yaml
 # .kg/schema/person.yaml
-type: Person
+type: person
 description: A person in the organization
 attributes:
   name:
@@ -92,13 +92,13 @@ attributes:
     type: string
 relations:
   worksOn:
-    target: Project
+    target: project
     cardinality: many
   reportsTo:
-    target: Person
+    target: person
     cardinality: one
   memberOf:
-    target: Team
+    target: team
     cardinality: many
 ```
 
@@ -112,7 +112,7 @@ relations:
 | Modify type | Edit the YAML file |
 | Delete type | Delete the file |
 | List types | `kg types` |
-| View type | `kg describe <Type>` |
+| View type | `kg describe <type>` |
 
 This means agents with filesystem access can evolve the schema by reading an existing schema file, understanding the pattern, and creating new ones:
 
@@ -122,7 +122,7 @@ $ cat .kg/schema/person.yaml
 
 # Agent creates a new schema file
 $ cat > .kg/schema/vehicle.yaml << 'EOF'
-type: Vehicle
+type: vehicle
 description: A vehicle in the fleet
 attributes:
   make:
@@ -136,15 +136,15 @@ attributes:
     type: string
 relations:
   assignedTo:
-    target: Person
+    target: person
     cardinality: one
   maintainedBy:
-    target: Team
+    target: team
     cardinality: one
 EOF
 
 # Next kg command picks up the new schema
-$ kg describe Vehicle
+$ kg describe vehicle
 ```
 
 Schema changes are automatically picked up on the next `kg` operation (or explicitly via `kg sync`).
@@ -164,19 +164,19 @@ $ kg get person:alice
 ```
 ```toon
 id: person:alice
-type: Person
+type: person
 name: Alice Chen
 role: Engineer
 worksOn[1]: project:atlas
 reportsTo[1]: person:bob
 ```
 
-#### `kg find <Type> [where <attr><op><val>, ...]`
+#### `kg find <type> [where <attr><op><val>, ...]`
 
 Search for entities by type and optional attribute filters.
 
 ```bash
-$ kg find Person where role=Engineer
+$ kg find person where role=Engineer
 ```
 ```toon
 results[3]{id,name,role}:
@@ -187,7 +187,7 @@ count: 3
 ```
 
 ```bash
-$ kg find Person where salary>=100000, role~=Engineer
+$ kg find person where salary>=100000, role~=Engineer
 ```
 ```toon
 results[2]{id,name,role,salary}:
@@ -256,9 +256,9 @@ $ kg back project:atlas via worksOn
 ```
 ```toon
 results[3]{id,name,type}:
-  person:alice,Alice Chen,Person
-  person:bob,Bob Smith,Person
-  person:charlie,Charlie Davis,Person
+  person:alice,Alice Chen,person
+  person:bob,Bob Smith,person
+  person:charlie,Charlie Davis,person
 count: 3
 ```
 
@@ -334,39 +334,39 @@ List all entity types defined in the schema.
 $ kg types
 ```
 ```toon
-types[3]: Person,Project,Team
+types[3]: person,project,team
 ```
 
-#### `kg describe <Type>`
+#### `kg describe <type>`
 
 Show schema details for a type.
 
 ```bash
-$ kg describe Person
+$ kg describe person
 ```
 ```toon
-type: Person
+type: person
 description: A person in the organization
 attributes[3]{name,type,required}:
   name,string,true
   role,string,false
   email,string,false
 relations[3]{name,target,cardinality}:
-  worksOn,Project,many
-  reportsTo,Person,one
-  memberOf,Team,many
+  worksOn,project,many
+  reportsTo,person,one
+  memberOf,team,many
 ```
 
 ### Mutation Commands (writes)
 
 All mutations write to YAML files first, then sync to the index.
 
-#### `kg create <Type> <id> [attr=val ...]`
+#### `kg create <type> <id> [attr=val ...]`
 
 Create a new entity.
 
 ```bash
-$ kg create Person charlie name="Charlie Davis" role="Designer"
+$ kg create person charlie name="Charlie Davis" role="Designer"
 ```
 ```toon
 created: person:charlie
@@ -482,7 +482,7 @@ Default output uses TOON (Token-Oriented Object Notation) for minimal token usag
 **Single entity (nested):**
 ```toon
 id: person:alice
-type: Person
+type: person
 name: Alice Chen
 role: Engineer
 ```
@@ -510,7 +510,7 @@ suggestions[2]: person:alice,person:bob
 Direct command-line usage for humans and agents.
 
 ```bash
-$ kg find Person where role=Engineer
+$ kg find person where role=Engineer
 ```
 
 ### 2. MCP Mode (planned)
@@ -556,7 +556,7 @@ Query and manage a local knowledge graph of entities and relationships.
 
 ### Query Commands (read-only)
 - `kg get <type:id>` — Get entity with attributes and relations
-- `kg find <Type> [where <attr><op><val>]` — Search entities by type/attributes
+- `kg find <type> [where <attr><op><val>]` — Search entities by type/attributes
   - Operators: `=`, `!=`, `~` (contains), `>`, `<`, `>=`, `<=`
 - `kg path <id> -> <rel> [-> <rel>...]` — Traverse relations forward
   - Use `->*` for recursive traversal (e.g., `->* reportsTo` for full chain)
@@ -564,12 +564,12 @@ Query and manage a local knowledge graph of entities and relationships.
 - `kg back <id> [via <rel>]` — Find entities pointing here (reverse)
   - Use `<-*` for recursive reverse traversal
 - `kg types` — List all entity types
-- `kg describe <Type>` — Show type schema
+- `kg describe <type>` — Show type schema
 - `kg morph` — List reusable path patterns
 - `kg morph <name> = <pattern>` — Define a morphism
 
 ### Mutation Commands (writes)
-- `kg create <Type> <id> [attr=val...]` — Create entity
+- `kg create <type> <id> [attr=val...]` — Create entity
 - `kg set <id> attr=val [, ...]` — Update attributes
 - `kg delete <id>` — Delete entity
 - `kg link <id> <rel> <target_id>` — Create relation
@@ -582,7 +582,7 @@ Schemas are YAML files in `.kg/schema/`. To create a new type:
 3. Run `kg sync` or any kg command to pick up changes
 
 Schema file format:
-- `type`: PascalCase type name (must match filename)
+- `type`: snake_case type name (must match filename)
 - `description`: Human-readable description  
 - `attributes`: Map of name → {type, required?}
   - type: string | number | boolean | date | datetime
@@ -593,7 +593,7 @@ Schema file format:
 Default: TOON format (token-efficient). Use `--json` for JSON output.
 
 ### Examples
-- Find highly-paid engineers: `kg find Person where role~=Engineer, salary>=100000`
+- Find highly-paid engineers: `kg find person where role~=Engineer, salary>=100000`
 - Who works on Atlas: `kg back project:atlas via worksOn`
 - Alice's full management chain: `kg path person:alice ->* reportsTo`
 - Alice's teammates: `kg path person:alice @teammates` (using morphism)
@@ -742,10 +742,10 @@ Internally stored as:
 Query possibilities:
 ```bash
 # Only facts from HR system
-kg find Person where worksOn=project:atlas --label source:hr-system
+kg find person where worksOn=project:atlas --label source:hr-system
 
 # Exclude inferred facts
-kg find Person --exclude-label source:inferred
+kg find person --exclude-label source:inferred
 ```
 
 ### Example: Temporal Snapshots

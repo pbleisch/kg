@@ -20,7 +20,7 @@ Runs locally on CPU — no API key needed. First run downloads ~80MB model.
 
 Protocol:
   Single mode (default):
-    stdin:  {"text": "...", "field": "name", "entity_id": "person:alice", "type": "Person"}
+    stdin:  {"text": "...", "field": "name", "entity_id": "person:alice", "type": "person"}
     stdout: [0.1, 0.2, ...]
 
   Batch mode (embedding.batch: true in config.yaml):
@@ -186,6 +186,6 @@ embedding:
 	fmt.Fprintf(w, "  1. pip install -r %s\n", reqPath)
 	fmt.Fprintln(w, "  2. Edit config.yaml to set your fields")
 	fmt.Fprintln(w, "  3. kg embed")
-	fmt.Fprintln(w, "  4. kg similar <Type> --field <name> --like <entity>")
+	fmt.Fprintln(w, "  4. kg similar <type> --field <name> --like <entity>")
 	return nil
 }

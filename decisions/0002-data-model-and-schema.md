@@ -15,8 +15,8 @@ Decision
 Status: Decided
 
 Decision:
-- ID format: `type:local-id` with lowercase, kebab-case type and filesystem-safe local-id. Types will be lowercase and filenames will map directly to local-ids.
-- File layout: `.kg/entities/<type>/<local-id>.yaml` and `.kg/schema/<type>.yaml` where `<type>` is kebab-case lowercase and matches the ID type prefix.
+- ID format: `type:local_id` with snake_case type and snake_case local-id. All identifiers (types, local IDs, relation names) are normalized to snake_case on input.
+- File layout: `.kg/entities/<type>/<local-id>.yaml` and `.kg/schema/<type>.yaml` where `<type>` is snake_case and matches the ID type prefix.
 - Attribute types: support string, number, boolean, date, datetime. Coercion rules: YAML scalars will be coerced by schema types where provided; unspecified attributes remain strings.
 - Relation representation: Use simple lists of target IDs for common cases, and allow enriched relation objects when metadata (label, confidence, asof) is required. Example:
   relations:

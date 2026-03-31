@@ -25,10 +25,10 @@ Introduce a dedicated `kg similar` command for similarity/vector search. This co
 Example usage:
 
 ```bash
-kg similar <Type> --vector "0.12,0.34,0.56,..." --field embedding --top 10
-kg similar <Type> --like <type:id> --field embedding --top 5
-kg similar <Type> --vector-file query.vec --field embedding --metric cosine --top 20
-kg similar <Type> --vector-file query.vec --field title_embedding,body_embedding --top 10
+kg similar <type> --vector "0.12,0.34,0.56,..." --field embedding --top 10
+kg similar <type> --like <type:id> --field embedding --top 5
+kg similar <type> --vector-file query.vec --field embedding --metric cosine --top 20
+kg similar <type> --vector-file query.vec --field title_embedding,body_embedding --top 10
 ```
 
 - `--vector`: Query vector as a comma-separated list (for small vectors or demos).

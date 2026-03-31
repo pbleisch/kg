@@ -28,7 +28,7 @@ Flags:
   --json              NDJSON output (default for non-TTY)
   --human             Human-readable lines (default for TTY)
   --snapshot           Emit all current entities as "created" events on startup
-  --type <types>      Comma-separated type filter (e.g., --type Game,Mechanic)
+  --type <types>      Comma-separated type filter (e.g., --type game,mechanic)
   --debounce <dur>    Coalesce rapid changes (e.g., --debounce 100ms)
   --daemon            Subscribe to running kg daemon instead of watching directly
 ```
@@ -42,15 +42,15 @@ for output format.
 **Init event** (always emitted first):
 
 ```jsonl
-{"event":"init","entity_count":147,"types":["Game","Mechanic",...],"ts":"2026-02-21T21:40:00Z"}
+{"event":"init","entity_count":147,"types":["game","mechanic",...],"ts":"2026-02-21T21:40:00Z"}
 ```
 
 **Entity events**:
 
 ```jsonl
-{"event":"created","ref":"mechanic:wall-jump","type":"Mechanic","name":"Wall Jump","ts":"..."}
-{"event":"updated","ref":"game:hades","type":"Game","name":"Hades","changed":["description","relations"],"ts":"..."}
-{"event":"deleted","ref":"mechanic:wall-jump","type":"Mechanic","ts":"..."}
+{"event":"created","ref":"mechanic:wall-jump","type":"mechanic","name":"Wall Jump","ts":"..."}
+{"event":"updated","ref":"game:hades","type":"game","name":"Hades","changed":["description","relations"],"ts":"..."}
+{"event":"deleted","ref":"mechanic:wall-jump","type":"mechanic","ts":"..."}
 ```
 
 **Relation events**:
@@ -64,7 +64,7 @@ for output format.
 
 ```jsonl
 {"event":"snapshot_start","entity_count":147,"ts":"..."}
-{"event":"created","ref":"mechanic:permadeath","type":"Mechanic","name":"Permadeath","snapshot":true,"ts":"..."}
+{"event":"created","ref":"mechanic:permadeath","type":"mechanic","name":"Permadeath","snapshot":true,"ts":"..."}
 {"event":"snapshot_end","entity_count":147,"ts":"..."}
 ```
 
@@ -89,10 +89,10 @@ When outputting to a TTY (or with `--human`):
 
 ```
 [21:40:00] init: 147 entities across 11 types
-[21:40:01] + mechanic:wall-jump (Mechanic) "Wall Jump"
-[21:40:05] ~ game:hades (Game) "Hades" [description, relations]
+[21:40:01] + mechanic:wall-jump (mechanic) "Wall Jump"
+[21:40:05] ~ game:hades (game) "Hades" [description, relations]
 [21:40:06] → game:hades --uses_mechanic--> mechanic:wall-jump
-[21:41:00] - mechanic:wall-jump (Mechanic)
+[21:41:00] - mechanic:wall-jump (mechanic)
 [21:41:01] ✕ game:hades --uses_mechanic--> mechanic:wall-jump
 ```
 

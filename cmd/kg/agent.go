@@ -301,10 +301,10 @@ description: >
 
 ` + "```" + `bash
 kg types --dir={{.KGDir}}                     # List schema types
-kg describe <Type> --dir={{.KGDir}}           # Show type schema
-kg create <Type> <id> [attrs...] --dir={{.KGDir}}  # Create entity
+kg describe <type> --dir={{.KGDir}}           # Show type schema
+kg create <type> <id> [attrs...] --dir={{.KGDir}}  # Create entity
 kg get <type:id> --dir={{.KGDir}}             # Get entity by ID
-kg find <Type> [filters...] --dir={{.KGDir}}  # Find entities
+kg find <type> [filters...] --dir={{.KGDir}}  # Find entities
 kg set <type:id> key=value --dir={{.KGDir}}   # Set attributes
 kg delete <type:id> --dir={{.KGDir}}          # Delete entity
 kg link <from> <rel> <to> --dir={{.KGDir}}    # Create relation
@@ -341,11 +341,11 @@ facts into the knowledge graph using this process:
 
 1. **Identify entities** — look for named people, projects, tools,
    organizations, concepts, or topics that are worth remembering.
-2. **Match to schema types** — check ` + "`kg types`" + ` and ` + "`kg describe <Type>`" + `
+2. **Match to schema types** — check ` + "`kg types`" + ` and ` + "`kg describe <type>`" + `
    to find the right type. If no type fits, note the gap but don't
    force a bad fit.
 3. **Check for duplicates** — before creating, run
-   ` + "`kg find <Type> name~<term> --dir={{.KGDir}}`" + ` to see if the
+   ` + "`kg find <type> name~<term> --dir={{.KGDir}}`" + ` to see if the
    entity already exists. Update existing entities with ` + "`kg set`" + `
    rather than creating duplicates.
 4. **Extract relationships** — look for verbs and associations that map

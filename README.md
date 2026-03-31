@@ -104,10 +104,10 @@ so the rpath resolves correctly. To build without installing: `mage ladybug:buil
 | Command | Description |
 |---------|-------------|
 | `kg init` | Scaffold a new `.kg/` directory |
-| `kg create <Type> <id> [attrs...]` | Create an entity |
+| `kg create <type> <id> [attrs...]` | Create an entity |
 | `kg get <type:id>` | Get an entity by ID |
-| `kg find <Type> [filters...]` | Find entities by type |
-| `kg similar <Type> --field <f> --vector\|--like\|--vector-file` | Find similar entities by vector |
+| `kg find <type> [filters...]` | Find entities by type |
+| `kg similar <type> --field <f> --vector\|--like\|--vector-file` | Find similar entities by vector |
 | `kg set <type:id> key=value` | Set attributes |
 | `kg delete <type:id>` | Delete an entity |
 | `kg link <from> <rel> <to>` | Create a relation |
@@ -115,7 +115,7 @@ so the rpath resolves correctly. To build without installing: `mage ladybug:buil
 | `kg path <id> -> <rel>` | Traverse forward relations |
 | `kg back <id>` | Find reverse references |
 | `kg types` | List schema types |
-| `kg describe <Type>` | Show type schema |
+| `kg describe <type>` | Show type schema |
 | `kg validate` | Validate entities against schemas |
 | `kg sync` | Sync YAML to the index |
 | `kg daemon start\|stop\|status` | Background index watcher |
@@ -142,7 +142,7 @@ kg get person:alice --human   # Human-readable
 kg watch                             # human-readable (TTY) or NDJSON (piped)
 kg watch --json                      # force NDJSON output
 kg watch --json --snapshot           # emit all entities first, then stream
-kg watch --json --type Game,Mechanic # filter by entity type
+kg watch --json --type game,mechanic # filter by entity type
 kg watch --json --debounce 100ms     # coalesce rapid changes
 kg watch --daemon                    # subscribe to running kg daemon
 ```
@@ -180,7 +180,7 @@ enabling semantic similarity search with `kg similar`.
 kg embed --init                          # scaffold embedding script
 pip install -r .kg/scripts/requirements.txt
 kg embed                                 # generate vectors
-kg similar Person --field name --like person:alice
+kg similar person --field name --like person:alice
 ```
 
 See [docs/embedding.md](docs/embedding.md) for the full guide.
