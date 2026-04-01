@@ -206,7 +206,7 @@ func init() {
 	}
 	cmd.Flags().Bool("dry-run", false, "Simulate the manifest without applying changes")
 	cmd.Flags().String("on-conflict", "fail", "Behavior when conflicts are encountered: fail, skip, merge")
-	cmd.Flags().String("on-error", "fail", "Behavior on action errors: fail (abort), warn (continue with stderr), skip (continue silently)")
+	cmd.Flags().String("on-error", "warn", "Behavior on action errors: fail (abort), warn (continue with stderr), skip (continue silently)")
 	rootCmd.AddCommand(cmd)
 }
 
