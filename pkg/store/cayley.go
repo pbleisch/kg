@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	bolt "go.etcd.io/bbolt"
 )
@@ -52,7 +53,7 @@ func openBolt(kgDir string) (Indexer, error) {
 	}
 
 	dbPath := filepath.Join(cacheDir, "cayley.bolt")
-	db, err := bolt.Open(dbPath, 0o600, nil)
+	db, err := bolt.Open(dbPath, 0o600, &bolt.Options{Timeout: 2 * time.Second})
 	if err != nil {
 		return nil, fmt.Errorf("open bolt db: %w", err)
 	}

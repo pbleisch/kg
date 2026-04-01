@@ -346,3 +346,92 @@ func TestEmbedInitScriptSyntax(t *testing.T) {
 		t.Fatalf("embed.py has syntax errors: %s\n%s", err, string(out))
 	}
 }
+
+func TestApplyOnErrorWarn(t *testing.T) {
+	dir := initKG(t)
+
+	// Create foo so that the link from nonexistent -> foo can succeed
+	// (link auto-creates stub for nonexistent source).
+	manifest := `
+version: 1
+actions:
+  - action: upsert
+    entity: { id: "concept:foo", type: concept, attributes: { name: Foo } }
+  - action: link
+    from: concept:nonexistent
+    rel: related_to
+    to: concept:foo
+  - action: upsert
+    entity: { id: "concept:bar", type: concept, attributes: { name: Bar } }
+`
+	mPath := filepath.Join(t.TempDir(), "manifest.yaml")
+	os.WriteFile(mPath, []byte(manifest), 0o644)
+
+	// With --on-error=warn, all actions should proceed.
+	out, err := runCmd(t, "apply", mPath, "--on-error=warn", "--dir="+dir)
+	if err != nil {
+		t.Fatalf("apply --on-error=warn: %v\noutput: %s", err, out)
+	}
+
+	// Foo should exist.
+	_, err = runCmd(t, "get", "concept:foo", "--dir="+dir)
+	if err != nil {
+		t.Error("concept:foo should exist")
+	}
+
+	// Bar should also exist (was not skipped).
+	_, err = runCmd(t, "get", "concept:bar", "--dir="+dir)
+	if err != nil {
+		t.Error("concept:bar should exist after --on-error=warn")
+	}
+}
+
+func TestApplyOnErrorFail(t *testing.T) {
+	dir := initKG(t)
+
+	// Manifest with a set on a nonexistent entity — should abort.
+	manifest := `
+version: 1
+actions:
+  - action: set
+    target: "concept:ghost"
+    attributes: { name: Ghost }
+  - action: upsert
+    entity: { id: "concept:bar", type: concept, attributes: { name: Bar } }
+`
+	mPath := filepath.Join(t.TempDir(), "manifest.yaml")
+	os.WriteFile(mPath, []byte(manifest), 0o644)
+
+	_, err := runCmd(t, "apply", mPath, "--on-error=fail", "--dir="+dir)
+	if err == nil {
+		t.Fatal("expected error with --on-error=fail on nonexistent target")
+	}
+
+	// Bar should NOT exist (apply aborted).
+	_, err = runCmd(t, "get", "concept:bar", "--dir="+dir)
+	if err == nil {
+		t.Error("concept:bar should NOT exist after failed apply")
+	}
+}
+
+func TestLinkAutoCreatesSource(t *testing.T) {
+	dir := initKG(t)
+
+	// Create the target entity.
+	_, err := runCmd(t, "create", "concept", "target", "name=Target", "--dir="+dir)
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+
+	// Link from a nonexistent source — should auto-create stub.
+	_, err = runCmd(t, "link", "concept:source", "related_to", "concept:target", "--dir="+dir)
+	if err != nil {
+		t.Fatalf("link: %v", err)
+	}
+
+	// Source should now exist as a stub.
+	_, err = runCmd(t, "get", "concept:source", "--dir="+dir)
+	if err != nil {
+		t.Fatalf("get source after auto-create: %v", err)
+	}
+}
