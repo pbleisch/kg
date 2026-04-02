@@ -116,6 +116,9 @@ so the rpath resolves correctly. To build without installing: `mage ladybug:buil
 | `kg back <id>` | Find reverse references |
 | `kg types` | List schema types |
 | `kg describe <type>` | Show type schema |
+| `kg merge <source> <target>` | Merge two entities |
+| `kg dedup <type> --threshold --fields` | Find/merge duplicate entities by similarity |
+| `kg stats` | Graph metrics |
 | `kg validate` | Validate entities against schemas |
 | `kg sync` | Sync YAML to the index |
 | `kg daemon start\|stop\|status` | Background index watcher |

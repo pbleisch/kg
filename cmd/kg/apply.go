@@ -59,13 +59,19 @@ func init() {
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
 			onConflict, _ := cmd.Flags().GetString("on-conflict")
 			onError, _ := cmd.Flags().GetString("on-error")
+			dedupThreshold, _ := cmd.Flags().GetFloat64("dedup-threshold")
+			dedupFieldsStr, _ := cmd.Flags().GetString("dedup-fields")
 
 			// Validate on-conflict flag.
 			switch onConflict {
-			case "fail", "skip", "merge":
+			case "fail", "skip", "merge", "dedup":
 				// ok
 			default:
 				return fmt.Errorf("invalid on-conflict value: %s", onConflict)
+			}
+
+			if onConflict == "dedup" && dedupFieldsStr == "" {
+				return fmt.Errorf("--dedup-fields is required when using --on-conflict dedup")
 			}
 
 			// Validate on-error flag.
@@ -130,12 +136,77 @@ func init() {
 			for i := range m.Actions {
 				normalizeAction(&m.Actions[i])
 			}
+
+			// Parse dedup fields once if needed.
+			var dedupFields []string
+			if onConflict == "dedup" {
+				for _, f := range strings.Split(dedupFieldsStr, ",") {
+					f = strings.TrimSpace(f)
+					if f != "" {
+						dedupFields = append(dedupFields, f)
+					}
+				}
+			}
+
+			// ID remap table for dedup: proposed_id → existing_id.
+			idRemap := make(map[string]string)
+			var dedupCount int
 			var applyErrors []string
+
 			for _, a := range m.Actions {
+				// Rewrite IDs through remap table (dedup mode).
+				if len(idRemap) > 0 {
+					if a.From != "" {
+						if mapped, ok := idRemap[a.From]; ok {
+							a.From = mapped
+						}
+					}
+					if a.To != "" {
+						if mapped, ok := idRemap[a.To]; ok {
+							a.To = mapped
+						}
+					}
+					if a.Target != "" {
+						if mapped, ok := idRemap[a.Target]; ok {
+							a.Target = mapped
+						}
+					}
+				}
+
 				var actionErr error
 				switch strings.ToLower(a.Action) {
 				case "create":
-					actionErr = applyCreate(a, onConflict)
+					if onConflict == "dedup" {
+						var remapTo string
+						actionErr, remapTo = applyCreateDedup(a, dedupFields, dedupThreshold)
+						if remapTo != "" && a.Entity != nil {
+							idRemap[a.Entity.ID] = remapTo
+							dedupCount++
+							if !cfg.quiet {
+								fmt.Fprintf(os.Stderr, "  dedup: %s → %s\n", a.Entity.ID, remapTo)
+							}
+						}
+					} else {
+						actionErr = applyCreate(a, onConflict)
+					}
+				case "upsert":
+					if onConflict == "dedup" {
+						var remapTo string
+						actionErr, remapTo = applyCreateDedup(a, dedupFields, dedupThreshold)
+						if remapTo != "" && a.Entity != nil {
+							idRemap[a.Entity.ID] = remapTo
+							dedupCount++
+							if !cfg.quiet {
+								fmt.Fprintf(os.Stderr, "  dedup: %s → %s\n", a.Entity.ID, remapTo)
+							}
+						}
+					} else {
+						if a.Entity == nil || a.Entity.ID == "" {
+							actionErr = fmt.Errorf("upsert action missing entity or id")
+						} else if _, err := command.UpsertEntity(cfg.kgDir, a.Entity); err != nil {
+							actionErr = fmt.Errorf("upserting %q: %w", a.Entity.ID, err)
+						}
+					}
 				case "set":
 					actionErr = applySet(a)
 				case "delete":
@@ -155,12 +226,6 @@ func init() {
 						actionErr = fmt.Errorf("unlink action missing from/rel/to")
 					} else {
 						actionErr = command.Unlink(cfg.kgDir, a.From, a.Rel, a.To)
-					}
-				case "upsert":
-					if a.Entity == nil || a.Entity.ID == "" {
-						actionErr = fmt.Errorf("upsert action missing entity or id")
-					} else if _, err := command.UpsertEntity(cfg.kgDir, a.Entity); err != nil {
-						actionErr = fmt.Errorf("upserting %q: %w", a.Entity.ID, err)
 					}
 				case "merge":
 					if a.From == "" || a.Target == "" {
@@ -201,12 +266,17 @@ func init() {
 			if len(applyErrors) > 0 && !cfg.quiet {
 				fmt.Fprintf(cmd.OutOrStdout(), "%d action(s) failed\n", len(applyErrors))
 			}
+			if dedupCount > 0 && !cfg.quiet {
+				fmt.Fprintf(cmd.OutOrStdout(), "%d action(s) deduped\n", dedupCount)
+			}
 			return nil
 		},
 	}
 	cmd.Flags().Bool("dry-run", false, "Simulate the manifest without applying changes")
-	cmd.Flags().String("on-conflict", "fail", "Behavior when conflicts are encountered: fail, skip, merge")
+	cmd.Flags().String("on-conflict", "fail", "Behavior when conflicts are encountered: fail, skip, merge, dedup")
 	cmd.Flags().String("on-error", "warn", "Behavior on action errors: fail (abort), warn (continue with stderr), skip (continue silently)")
+	cmd.Flags().Float64("dedup-threshold", 0.85, "Similarity threshold for dedup mode (0.0–1.0)")
+	cmd.Flags().String("dedup-fields", "", "Comma-separated fields for dedup similarity (required with --on-conflict dedup)")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -312,4 +382,137 @@ func normalizeAction(a *Action) {
 	if a.Rel != "" {
 		a.Rel = store.NormalizeRelation(a.Rel)
 	}
+}
+
+// applyCreateDedup handles create/upsert with similarity-aware dedup.
+// Returns (error, remappedToID). If remappedToID is non-empty, the entity
+// was deduped into an existing entity instead of being created.
+func applyCreateDedup(a Action, dedupFields []string, threshold float64) (error, string) {
+	if a.Entity == nil || a.Entity.ID == "" {
+		return fmt.Errorf("create/upsert action missing entity or id"), ""
+	}
+
+	typeName := a.Entity.Type
+	if typeName == "" {
+		// Infer type from ID.
+		parts := strings.SplitN(a.Entity.ID, ":", 2)
+		if len(parts) == 2 {
+			typeName = parts[0]
+		}
+	}
+
+	// Load existing entities of the same type.
+	existing, err := store.ListEntitiesByType(cfg.kgDir, typeName)
+	if err != nil {
+		// No existing entities — just create.
+		return createEntity(a), ""
+	}
+
+	// Build query vectors from the new entity's attributes.
+	// First try to use pre-computed embeddings, then compute inline.
+	queryVecs := make(map[string][]float64)
+	for _, field := range dedupFields {
+		// Check if entity already has embedding.
+		embKey := field + "_embedding"
+		if val, ok := a.Entity.Attributes[embKey]; ok {
+			if vec, ok := store.ExtractVector(val); ok && len(vec) > 0 {
+				queryVecs[field] = vec
+				continue
+			}
+		}
+
+		// Compute inline via external command.
+		text, ok := a.Entity.Attributes[field]
+		if !ok {
+			continue
+		}
+		textStr := fmt.Sprintf("%v", text)
+		if textStr == "" {
+			continue
+		}
+
+		ecfg, err := store.LoadConfig(cfg.kgDir)
+		if err != nil || ecfg.Embedding == nil || ecfg.Embedding.Command == "" {
+			continue
+		}
+		input := store.EmbedInput{
+			Text:     textStr,
+			Field:    field,
+			EntityID: a.Entity.ID,
+			Type:     typeName,
+		}
+		vec, err := store.RunEmbedSingle(ecfg.Embedding.Command, input)
+		if err != nil {
+			continue
+		}
+		queryVecs[field] = vec
+	}
+
+	if len(queryVecs) == 0 {
+		// No vectors available — fall through to normal create/upsert.
+		return createEntity(a), ""
+	}
+
+	// Find best match among existing entities.
+	bestScore := 0.0
+	bestID := ""
+	bestField := ""
+	for _, e := range existing {
+		if e.ID == a.Entity.ID {
+			continue
+		}
+		for _, field := range dedupFields {
+			qv, ok := queryVecs[field]
+			if !ok {
+				continue
+			}
+			embKey := field + "_embedding"
+			val, ok := e.Attributes[embKey]
+			if !ok {
+				continue
+			}
+			vec, ok := store.ExtractVector(val)
+			if !ok || len(vec) == 0 {
+				continue
+			}
+			score, err := store.CosineSimilarity(qv, vec)
+			if err != nil {
+				continue
+			}
+			if score > bestScore {
+				bestScore = score
+				bestID = e.ID
+				bestField = field
+			}
+		}
+	}
+
+	if bestScore >= threshold && bestID != "" {
+		// Dedup: merge into existing entity.
+		_ = bestField
+		mergeOpts := command.MergeOptions{CrossType: true}
+		// First create the entity so Merge can read it.
+		if err := store.WriteEntity(cfg.kgDir, a.Entity); err != nil {
+			return fmt.Errorf("writing entity for merge: %w", err), ""
+		}
+		if err := store.Sync(cfg.kgDir); err != nil {
+			return fmt.Errorf("syncing before merge: %w", err), ""
+		}
+		_, err := command.Merge(cfg.kgDir, a.Entity.ID, bestID, mergeOpts)
+		if err != nil {
+			return fmt.Errorf("dedup merge %s → %s: %w", a.Entity.ID, bestID, err), ""
+		}
+		return nil, bestID
+	}
+
+	// No match above threshold — create normally.
+	return createEntity(a), ""
+}
+
+// createEntity writes an entity and syncs the index.
+func createEntity(a Action) error {
+	if err := store.WriteEntity(cfg.kgDir, a.Entity); err != nil {
+		return fmt.Errorf("creating entity %q: %w", a.Entity.ID, err)
+	}
+	return store.Sync(cfg.kgDir)
 }
