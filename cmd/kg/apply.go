@@ -153,6 +153,15 @@ func init() {
 			var dedupCount int
 			var applyErrors []string
 
+			// Open index once for dedup vector search (if needed).
+			var dedupIdx store.Indexer
+			if onConflict == "dedup" {
+				if idx, err := store.OpenIndex(cfg.kgDir); err == nil {
+					dedupIdx = idx
+				}
+			}
+
+			store.BeginBatch()
 			for _, a := range m.Actions {
 				// Rewrite IDs through remap table (dedup mode).
 				if len(idRemap) > 0 {
@@ -178,7 +187,7 @@ func init() {
 				case "create":
 					if onConflict == "dedup" {
 						var remapTo string
-						actionErr, remapTo = applyCreateDedup(a, dedupFields, dedupThreshold)
+						actionErr, remapTo = applyCreateDedup(a, dedupFields, dedupThreshold, dedupIdx)
 						if remapTo != "" && a.Entity != nil {
 							idRemap[a.Entity.ID] = remapTo
 							dedupCount++
@@ -192,7 +201,7 @@ func init() {
 				case "upsert":
 					if onConflict == "dedup" {
 						var remapTo string
-						actionErr, remapTo = applyCreateDedup(a, dedupFields, dedupThreshold)
+						actionErr, remapTo = applyCreateDedup(a, dedupFields, dedupThreshold, dedupIdx)
 						if remapTo != "" && a.Entity != nil {
 							idRemap[a.Entity.ID] = remapTo
 							dedupCount++
@@ -269,6 +278,18 @@ func init() {
 			if dedupCount > 0 && !cfg.quiet {
 				fmt.Fprintf(cmd.OutOrStdout(), "%d action(s) deduped\n", dedupCount)
 			}
+			// Close dedup index before final sync to release lock.
+			if dedupIdx != nil {
+				dedupIdx.Close()
+				dedupIdx = nil
+			}
+			// End batch mode — triggers a single final sync.
+			if err := store.EndBatch(cfg.kgDir); err != nil {
+				// Non-fatal: YAML files are already written.
+				if !cfg.quiet {
+					fmt.Fprintf(os.Stderr, "warning: post-apply sync failed (run 'kg sync' manually): %v\n", err)
+				}
+			}
 			return nil
 		},
 	}
@@ -322,13 +343,13 @@ func applyCreate(a Action, onConflict string) error {
 			if err := store.WriteEntity(cfg.kgDir, existing); err != nil {
 				return fmt.Errorf("writing merged entity %q: %w", a.Entity.ID, err)
 			}
-			return store.Sync(cfg.kgDir)
+			return nil
 		}
 	}
 	if err := store.WriteEntity(cfg.kgDir, a.Entity); err != nil {
 		return fmt.Errorf("creating entity %q: %w", a.Entity.ID, err)
 	}
-	return store.Sync(cfg.kgDir)
+	return nil
 }
 
 // applySet handles a set action.
@@ -349,7 +370,7 @@ func applySet(a Action) error {
 	if err := store.WriteEntity(cfg.kgDir, e); err != nil {
 		return fmt.Errorf("writing target %q: %w", a.Target, err)
 	}
-	return store.Sync(cfg.kgDir)
+	return nil
 }
 
 // normalizeAction applies snake_case normalization to all IDs and relation
@@ -387,7 +408,7 @@ func normalizeAction(a *Action) {
 // applyCreateDedup handles create/upsert with similarity-aware dedup.
 // Returns (error, remappedToID). If remappedToID is non-empty, the entity
 // was deduped into an existing entity instead of being created.
-func applyCreateDedup(a Action, dedupFields []string, threshold float64) (error, string) {
+func applyCreateDedup(a Action, dedupFields []string, threshold float64, dedupIdx store.Indexer) (error, string) {
 	if a.Entity == nil || a.Entity.ID == "" {
 		return fmt.Errorf("create/upsert action missing entity or id"), ""
 	}
@@ -401,15 +422,7 @@ func applyCreateDedup(a Action, dedupFields []string, threshold float64) (error,
 		}
 	}
 
-	// Load existing entities of the same type.
-	existing, err := store.ListEntitiesByType(cfg.kgDir, typeName)
-	if err != nil {
-		// No existing entities — just create.
-		return createEntity(a), ""
-	}
-
 	// Build query vectors from the new entity's attributes.
-	// First try to use pre-computed embeddings, then compute inline.
 	queryVecs := make(map[string][]float64)
 	for _, field := range dedupFields {
 		// Check if entity already has embedding.
@@ -450,6 +463,48 @@ func applyCreateDedup(a Action, dedupFields []string, threshold float64) (error,
 
 	if len(queryVecs) == 0 {
 		// No vectors available — fall through to normal create/upsert.
+		return createEntity(a), ""
+	}
+
+	// Use index-based vector search if available (much faster than YAML scan).
+	if dedupIdx != nil {
+		if vs, ok := dedupIdx.(store.VectorSearcher); ok {
+			bestScore := 0.0
+			bestID := ""
+			for _, field := range dedupFields {
+				qv, ok := queryVecs[field]
+				if !ok {
+					continue
+				}
+				results, err := vs.SimilarEntities(store.SimilarityParams{
+					TypeName: typeName,
+					Fields:   []string{field},
+					Vector:   qv,
+					TopN:     1,
+				})
+				if err == nil && len(results) > 0 && results[0].Score > bestScore {
+					bestScore = results[0].Score
+					bestID = results[0].Entity.ID
+				}
+			}
+			if bestScore >= threshold && bestID != "" && bestID != a.Entity.ID {
+				mergeOpts := command.MergeOptions{CrossType: true}
+				if err := store.WriteEntity(cfg.kgDir, a.Entity); err != nil {
+					return fmt.Errorf("writing entity for merge: %w", err), ""
+				}
+				_, err := command.Merge(cfg.kgDir, a.Entity.ID, bestID, mergeOpts)
+				if err != nil {
+					return fmt.Errorf("dedup merge %s → %s: %w", a.Entity.ID, bestID, err), ""
+				}
+				return nil, bestID
+			}
+			return createEntity(a), ""
+		}
+	}
+
+	// Fallback: brute-force YAML scan (slow on large KGs).
+	existing, err := store.ListEntitiesByType(cfg.kgDir, typeName)
+	if err != nil {
 		return createEntity(a), ""
 	}
 
@@ -509,10 +564,10 @@ func applyCreateDedup(a Action, dedupFields []string, threshold float64) (error,
 	return createEntity(a), ""
 }
 
-// createEntity writes an entity and syncs the index.
+// createEntity writes an entity to disk (sync deferred to end of apply).
 func createEntity(a Action) error {
 	if err := store.WriteEntity(cfg.kgDir, a.Entity); err != nil {
 		return fmt.Errorf("creating entity %q: %w", a.Entity.ID, err)
 	}
-	return store.Sync(cfg.kgDir)
+	return nil
 }

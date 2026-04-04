@@ -9,10 +9,24 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
+
+// batchMode when >0 causes Sync to be a no-op.  Call BeginBatch before a
+// batch of writes and EndBatch (which runs a real Sync) when done.
+var batchMode int32
+
+// BeginBatch suppresses per-operation Sync calls.  Must be paired with EndBatch.
+func BeginBatch() { atomic.AddInt32(&batchMode, 1) }
+
+// EndBatch re-enables Sync and performs one final sync.
+func EndBatch(kgDir string) error {
+	atomic.AddInt32(&batchMode, -1)
+	return Sync(kgDir)
+}
 
 // Manifest tracks which YAML entity files have been synced to the index.
 type Manifest struct {
@@ -101,9 +115,11 @@ func fileChecksum(path string) (string, error) {
 }
 
 // Sync performs an incremental sync from YAML entity files to the index.
-// Malformed entities are skipped so that one bad file does not block the
-// entire sync. Use SyncWithResult to inspect warnings and counts.
+// In batch mode (between BeginBatch/EndBatch) this is a no-op.
 func Sync(kgDir string) error {
+	if atomic.LoadInt32(&batchMode) > 0 {
+		return nil
+	}
 	_, err := SyncWithResult(kgDir)
 	return err
 }
@@ -158,6 +174,15 @@ func SyncWithResult(kgDir string) (*SyncResult, error) {
 		}
 		currentFiles[rel] = struct{}{}
 
+		// Fast path: skip unchanged files by ModTime before expensive checksum.
+		prev, exists := manifest.Files[rel]
+		if exists {
+			info, err := d.Info()
+			if err == nil && info.ModTime().Equal(prev.ModTime) {
+				return nil // unchanged since last sync
+			}
+		}
+
 		checksum, err := fileChecksum(path)
 		if err != nil {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: checksum: %v", rel, err))
@@ -165,7 +190,6 @@ func SyncWithResult(kgDir string) (*SyncResult, error) {
 			return nil
 		}
 
-		prev, exists := manifest.Files[rel]
 		if exists && prev.Checksum == checksum {
 			return nil // unchanged
 		}
