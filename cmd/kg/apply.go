@@ -148,6 +148,71 @@ func init() {
 				}
 			}
 
+			// Pre-compute embeddings for all dedup entities in a single batch
+			// call, avoiding N separate subprocess invocations.
+			if onConflict == "dedup" && len(dedupFields) > 0 {
+				ecfg, err := store.LoadConfig(cfg.kgDir)
+				if err == nil && ecfg.Embedding != nil && ecfg.Embedding.Command != "" {
+					var inputs []store.EmbedInput
+					type embedTarget struct {
+						actionIdx int
+						field     string
+					}
+					var targets []embedTarget
+
+					for i, a := range m.Actions {
+						act := strings.ToLower(a.Action)
+						if act != "create" && act != "upsert" {
+							continue
+						}
+						if a.Entity == nil {
+							continue
+						}
+						for _, field := range dedupFields {
+							embKey := field + "_embedding"
+							if val, ok := a.Entity.Attributes[embKey]; ok {
+								if vec, ok := store.ExtractVector(val); ok && len(vec) > 0 {
+									continue // already has embedding
+								}
+							}
+							text, ok := a.Entity.Attributes[field]
+							if !ok {
+								continue
+							}
+							textStr := fmt.Sprintf("%v", text)
+							if textStr == "" {
+								continue
+							}
+							typeName := a.Entity.Type
+							if typeName == "" {
+								if parts := strings.SplitN(a.Entity.ID, ":", 2); len(parts) == 2 {
+									typeName = parts[0]
+								}
+							}
+							inputs = append(inputs, store.EmbedInput{
+								Text:     textStr,
+								Field:    field,
+								EntityID: a.Entity.ID,
+								Type:     typeName,
+							})
+							targets = append(targets, embedTarget{actionIdx: i, field: field})
+						}
+					}
+
+					if len(inputs) > 0 {
+						if vectors, err := store.RunEmbedBatch(ecfg.Embedding.Command, inputs); err == nil && len(vectors) == len(inputs) {
+							for i, t := range targets {
+								embKey := t.field + "_embedding"
+								m.Actions[t.actionIdx].Entity.Attributes[embKey] = vectors[i]
+							}
+							if !cfg.quiet {
+								fmt.Fprintf(os.Stderr, "  pre-embedded %d fields for dedup\n", len(vectors))
+							}
+						}
+					}
+				}
+			}
+
 			// ID remap table for dedup: proposed_id → existing_id.
 			idRemap := make(map[string]string)
 			var dedupCount int
@@ -422,42 +487,15 @@ func applyCreateDedup(a Action, dedupFields []string, threshold float64, dedupId
 	}
 
 	// Build query vectors from the new entity's attributes.
+	// Pre-computed embeddings (from batch embed or manifest) are used directly.
 	queryVecs := make(map[string][]float64)
 	for _, field := range dedupFields {
-		// Check if entity already has embedding.
 		embKey := field + "_embedding"
 		if val, ok := a.Entity.Attributes[embKey]; ok {
 			if vec, ok := store.ExtractVector(val); ok && len(vec) > 0 {
 				queryVecs[field] = vec
-				continue
 			}
 		}
-
-		// Compute inline via external command.
-		text, ok := a.Entity.Attributes[field]
-		if !ok {
-			continue
-		}
-		textStr := fmt.Sprintf("%v", text)
-		if textStr == "" {
-			continue
-		}
-
-		ecfg, err := store.LoadConfig(cfg.kgDir)
-		if err != nil || ecfg.Embedding == nil || ecfg.Embedding.Command == "" {
-			continue
-		}
-		input := store.EmbedInput{
-			Text:     textStr,
-			Field:    field,
-			EntityID: a.Entity.ID,
-			Type:     typeName,
-		}
-		vec, err := store.RunEmbedSingle(ecfg.Embedding.Command, input)
-		if err != nil {
-			continue
-		}
-		queryVecs[field] = vec
 	}
 
 	if len(queryVecs) == 0 {

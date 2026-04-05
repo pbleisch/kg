@@ -280,19 +280,44 @@ func (idx *ladybugIndex) FindByType(typeName string) ([]string, error) {
 }
 
 // SimilarEntities implements VectorSearcher. It loads all entities of the
-// given type, extracts vectors from the specified fields (falling back to
-// <field>_embedding if the bare name is absent), computes similarity with
-// the query vector, and returns the top-N results sorted by score.
+// given type in a single bulk query, extracts vectors from the specified
+// fields (falling back to <field>_embedding if the bare name is absent),
+// computes similarity with the query vector, and returns the top-N results
+// sorted by score.
 func (idx *ladybugIndex) SimilarEntities(params SimilarityParams) ([]SimilarityResult, error) {
-	ids, err := idx.FindByType(params.TypeName)
+	// Bulk query: fetch id + attrs for all entities of the type in one call.
+	stmt, err := idx.conn.Prepare(
+		"MATCH (n:Entity) WHERE n.type = $type AND n.attrs <> '{}' RETURN n.id, n.attrs",
+	)
 	if err != nil {
-		return nil, fmt.Errorf("finding type %s: %w", params.TypeName, err)
+		return nil, fmt.Errorf("prepare bulk similar: %w", err)
 	}
+	defer stmt.Close()
+
+	qResult, err := idx.conn.Execute(stmt, map[string]any{"type": params.TypeName})
+	if err != nil {
+		return nil, fmt.Errorf("bulk similar query: %w", err)
+	}
+	defer qResult.Close()
 
 	var results []SimilarityResult
-	for _, id := range ids {
-		e, err := idx.GetEntity(id)
+	for qResult.HasNext() {
+		tuple, err := qResult.Next()
 		if err != nil {
+			continue
+		}
+		idVal, _ := tuple.GetValue(0)
+		attrsVal, _ := tuple.GetValue(1)
+		tuple.Close()
+
+		id := fmt.Sprint(idVal)
+		attrsStr, ok := attrsVal.(string)
+		if !ok || attrsStr == "" || attrsStr == "{}" {
+			continue
+		}
+
+		attrs := make(map[string]any)
+		if err := json.Unmarshal([]byte(attrsStr), &attrs); err != nil {
 			continue
 		}
 
@@ -300,25 +325,14 @@ func (idx *ladybugIndex) SimilarEntities(params SimilarityParams) ([]SimilarityR
 		bestField := ""
 
 		for _, field := range params.Fields {
-			// Resolve field: try exact name, then <name>_embedding.
-			resolvedField := field
-			val, ok := e.Attributes[field]
-			if !ok {
-				resolvedField = field + "_embedding"
-				val, ok = e.Attributes[resolvedField]
-				if !ok {
-					continue
-				}
-			}
-
-			vec, ok := ExtractVector(val)
-			if !ok {
+			resolvedField, vec := ResolveVector(attrs, field)
+			if vec == nil {
 				continue
 			}
 
 			score, err := computeScore(params.Metric, params.Vector, vec)
 			if err != nil {
-				continue // dimension mismatch — skip field
+				continue
 			}
 
 			if score > bestScore {
@@ -328,7 +342,14 @@ func (idx *ladybugIndex) SimilarEntities(params SimilarityParams) ([]SimilarityR
 		}
 
 		if math.IsInf(bestScore, -1) {
-			continue // no usable vector field on this entity
+			continue
+		}
+
+		// Build minimal entity for result (avoid full GetEntity query).
+		e := &Entity{
+			ID:         id,
+			Type:       params.TypeName,
+			Attributes: attrs,
 		}
 
 		results = append(results, SimilarityResult{

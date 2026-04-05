@@ -25,7 +25,7 @@ func Similar(kgDir string, params store.SimilarityParams) ([]store.SimilarityRes
 
 	vs, ok := idx.(store.VectorSearcher)
 	if !ok {
-		return nil, fmt.Errorf("similarity search is only available with the kg-ladybug binary")
+		return nil, fmt.Errorf("active index backend does not support similarity search")
 	}
 
 	return vs.SimilarEntities(params)

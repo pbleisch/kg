@@ -101,3 +101,23 @@ func SortResults(results []SimilarityResult) {
 		return results[i].Score > results[j].Score
 	})
 }
+
+// ResolveVector extracts a vector from entity attributes for the given field.
+// Resolution order: field as-is → field+"_embedding". Returns the resolved
+// field name and vector, or empty/nil if no vector found.
+func ResolveVector(attrs map[string]any, field string) (string, []float64) {
+	// Try exact field name first (might be a raw vector attribute).
+	if val, ok := attrs[field]; ok {
+		if vec, ok := ExtractVector(val); ok && len(vec) > 0 {
+			return field, vec
+		}
+	}
+	// Fallback: try <field>_embedding.
+	embField := field + "_embedding"
+	if val, ok := attrs[embField]; ok {
+		if vec, ok := ExtractVector(val); ok && len(vec) > 0 {
+			return embField, vec
+		}
+	}
+	return "", nil
+}

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -368,4 +369,63 @@ func TestBatchRemoveEntities(t *testing.T) {
 	if _, err := idx.GetEntity("bob"); err != nil {
 		t.Errorf("bob should still exist: %v", err)
 	}
+}
+
+func TestBoltSimilarEntities(t *testing.T) {
+	idx := tempIndex(t)
+
+	// Create entities with embedding vectors.
+	vec1 := []float64{1.0, 0.0, 0.0}
+	vec2 := []float64{0.9, 0.1, 0.0} // similar to vec1
+	vec3 := []float64{0.0, 0.0, 1.0} // orthogonal to vec1
+
+	entities := []*Entity{
+		{ID: "doc:a", Type: "doc", Attributes: map[string]any{"title": "Alpha", "title_embedding": vec1}},
+		{ID: "doc:b", Type: "doc", Attributes: map[string]any{"title": "Beta", "title_embedding": vec2}},
+		{ID: "doc:c", Type: "doc", Attributes: map[string]any{"title": "Gamma", "title_embedding": vec3}},
+		{ID: "other:x", Type: "other", Attributes: map[string]any{"title": "X", "title_embedding": vec1}},
+	}
+	for _, e := range entities {
+		if err := idx.AddEntity(e); err != nil {
+			t.Fatalf("AddEntity(%s): %v", e.ID, err)
+		}
+	}
+
+	vs, ok := idx.(VectorSearcher)
+	if !ok {
+		t.Fatal("boltIndex should implement VectorSearcher")
+	}
+
+	results, err := vs.SimilarEntities(SimilarityParams{
+		TypeName: "doc",
+		Vector:   vec1,
+		Fields:   []string{"title"},
+		TopN:     2,
+	})
+	if err != nil {
+		t.Fatalf("SimilarEntities: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2", len(results))
+	}
+
+	// First result should be doc:a (exact match, score=1.0).
+	if results[0].Entity.ID != "doc:a" {
+		t.Errorf("results[0].ID = %s, want doc:a", results[0].Entity.ID)
+	}
+	if math.Abs(results[0].Score-1.0) > 0.01 {
+		t.Errorf("results[0].Score = %f, want ~1.0", results[0].Score)
+	}
+
+	// Second result should be doc:b (similar, high score).
+	if results[1].Entity.ID != "doc:b" {
+		t.Errorf("results[1].ID = %s, want doc:b", results[1].Entity.ID)
+	}
+	if results[1].Score < 0.9 {
+		t.Errorf("results[1].Score = %f, want > 0.9", results[1].Score)
+	}
+
+	// doc:c should not be in top 2 (orthogonal).
+	// other:x should not appear (different type).
 }

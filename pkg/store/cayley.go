@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -340,4 +341,58 @@ func (idx *boltIndex) RemoveEntities(ids []string) error {
 		}
 		return nil
 	})
+}
+
+// SimilarEntities implements VectorSearcher for boltIndex. It finds all
+// entities of the given type, extracts embedding vectors from their indexed
+// attributes, computes similarity scores, and returns the top-N results.
+func (idx *boltIndex) SimilarEntities(params SimilarityParams) ([]SimilarityResult, error) {
+	ids, err := idx.FindByType(params.TypeName)
+	if err != nil {
+		return nil, fmt.Errorf("finding type %s: %w", params.TypeName, err)
+	}
+
+	var results []SimilarityResult
+	for _, id := range ids {
+		e, err := idx.GetEntity(id)
+		if err != nil {
+			continue
+		}
+
+		bestScore := math.Inf(-1)
+		bestField := ""
+
+		for _, field := range params.Fields {
+			resolvedField, vec := ResolveVector(e.Attributes, field)
+			if vec == nil {
+				continue
+			}
+
+			score, err := computeScore(params.Metric, params.Vector, vec)
+			if err != nil {
+				continue
+			}
+
+			if score > bestScore {
+				bestScore = score
+				bestField = resolvedField
+			}
+		}
+
+		if math.IsInf(bestScore, -1) {
+			continue
+		}
+
+		results = append(results, SimilarityResult{
+			Entity:     e,
+			Score:      bestScore,
+			MatchField: bestField,
+		})
+	}
+
+	SortResults(results)
+	if params.TopN > 0 && len(results) > params.TopN {
+		results = results[:params.TopN]
+	}
+	return results, nil
 }
