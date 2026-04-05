@@ -376,3 +376,39 @@ func (idx *ladybugIndex) FindByRelationTarget(relation, targetID string) ([]stri
 	}
 	return ids, nil
 }
+
+// FindReferrers returns unique entity IDs that point to the given entity via
+// any relation.
+func (idx *ladybugIndex) FindReferrers(id string) ([]string, error) {
+	stmt, err := idx.conn.Prepare(
+		"MATCH (n:Entity)-[r:HasRel]->(t:Entity {id: $target}) " +
+			"RETURN DISTINCT n.id",
+	)
+	if err != nil {
+		return nil, fmt.Errorf("prepare referrers: %w", err)
+	}
+	defer stmt.Close()
+
+	result, err := idx.conn.Execute(stmt, map[string]any{"target": id})
+	if err != nil {
+		return nil, fmt.Errorf("find referrers: %w", err)
+	}
+	defer result.Close()
+
+	var ids []string
+	for result.HasNext() {
+		tuple, err := result.Next()
+		if err != nil {
+			return nil, fmt.Errorf("read result: %w", err)
+		}
+		val, _ := tuple.GetValue(0)
+		tuple.Close()
+		ids = append(ids, fmt.Sprint(val))
+	}
+	return ids, nil
+}
+
+// UpsertEntity delegates to AddEntity which already uses MERGE (upsert).
+func (idx *ladybugIndex) UpsertEntity(e *Entity) error {
+	return idx.AddEntity(e)
+}

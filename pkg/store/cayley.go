@@ -87,24 +87,7 @@ func opsKey(o, p, s string) []byte { return []byte(o + sep + p + sep + s) }
 //   - (id, "attr:<name>", jsonValue) for each attribute
 //   - (id, "rel:<name>", targetID) for each relation target
 func (idx *boltIndex) AddEntity(e *Entity) error {
-	type triple struct{ s, p, o string }
-	var triples []triple
-
-	triples = append(triples, triple{e.ID, "type", e.Type})
-
-	for k, v := range e.Attributes {
-		encoded, err := json.Marshal(v)
-		if err != nil {
-			return fmt.Errorf("marshal attr %s: %w", k, err)
-		}
-		triples = append(triples, triple{e.ID, "attr:" + k, string(encoded)})
-	}
-
-	for rel, targets := range e.Relations {
-		for _, t := range targets {
-			triples = append(triples, triple{e.ID, "rel:" + rel, t})
-		}
-	}
+	triples := buildTriples(e)
 
 	return idx.db.Update(func(tx *bolt.Tx) error {
 		spo := tx.Bucket(bucketSPO)
@@ -224,4 +207,137 @@ func hasPrefix(b, prefix []byte) bool {
 
 func splitKey(k []byte) []string {
 	return strings.Split(string(k), sep)
+}
+
+type triple struct{ s, p, o string }
+
+// buildTriples constructs the set of index triples for an entity.
+func buildTriples(e *Entity) []triple {
+	var triples []triple
+	triples = append(triples, triple{e.ID, "type", e.Type})
+
+	for k, v := range e.Attributes {
+		encoded, err := json.Marshal(v)
+		if err != nil {
+			continue
+		}
+		triples = append(triples, triple{e.ID, "attr:" + k, string(encoded)})
+	}
+
+	for rel, targets := range e.Relations {
+		for _, t := range targets {
+			triples = append(triples, triple{e.ID, "rel:" + rel, t})
+		}
+	}
+	return triples
+}
+
+// UpsertEntity removes old quads and adds new ones in a single transaction.
+func (idx *boltIndex) UpsertEntity(e *Entity) error {
+	triples := buildTriples(e)
+	prefix := []byte(e.ID + sep)
+
+	return idx.db.Update(func(tx *bolt.Tx) error {
+		spo := tx.Bucket(bucketSPO)
+		ops := tx.Bucket(bucketOPS)
+
+		// Remove old data.
+		var toDelete [][]byte
+		c := spo.Cursor()
+		for k, _ := c.Seek(prefix); k != nil && hasPrefix(k, prefix); k, _ = c.Next() {
+			toDelete = append(toDelete, append([]byte(nil), k...))
+		}
+		for _, k := range toDelete {
+			parts := splitKey(k)
+			if len(parts) == 3 {
+				_ = ops.Delete(opsKey(parts[2], parts[1], parts[0]))
+			}
+			_ = spo.Delete(k)
+		}
+
+		// Add new data.
+		val := []byte("1")
+		for _, tr := range triples {
+			if err := spo.Put(spoKey(tr.s, tr.p, tr.o), val); err != nil {
+				return err
+			}
+			if err := ops.Put(opsKey(tr.o, tr.p, tr.s), val); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// UpsertEntities upserts multiple entities in a single BoltDB transaction.
+func (idx *boltIndex) UpsertEntities(entities []*Entity) error {
+	type entityTriples struct {
+		prefix  []byte
+		triples []triple
+	}
+	batch := make([]entityTriples, len(entities))
+	for i, e := range entities {
+		batch[i] = entityTriples{
+			prefix:  []byte(e.ID + sep),
+			triples: buildTriples(e),
+		}
+	}
+
+	return idx.db.Update(func(tx *bolt.Tx) error {
+		spo := tx.Bucket(bucketSPO)
+		ops := tx.Bucket(bucketOPS)
+		val := []byte("1")
+
+		for _, et := range batch {
+			// Remove old data.
+			var toDelete [][]byte
+			c := spo.Cursor()
+			for k, _ := c.Seek(et.prefix); k != nil && hasPrefix(k, et.prefix); k, _ = c.Next() {
+				toDelete = append(toDelete, append([]byte(nil), k...))
+			}
+			for _, k := range toDelete {
+				parts := splitKey(k)
+				if len(parts) == 3 {
+					_ = ops.Delete(opsKey(parts[2], parts[1], parts[0]))
+				}
+				_ = spo.Delete(k)
+			}
+
+			// Add new data.
+			for _, tr := range et.triples {
+				if err := spo.Put(spoKey(tr.s, tr.p, tr.o), val); err != nil {
+					return err
+				}
+				if err := ops.Put(opsKey(tr.o, tr.p, tr.s), val); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+}
+
+// RemoveEntities removes multiple entities in a single BoltDB transaction.
+func (idx *boltIndex) RemoveEntities(ids []string) error {
+	return idx.db.Update(func(tx *bolt.Tx) error {
+		spo := tx.Bucket(bucketSPO)
+		ops := tx.Bucket(bucketOPS)
+
+		for _, id := range ids {
+			prefix := []byte(id + sep)
+			var toDelete [][]byte
+			c := spo.Cursor()
+			for k, _ := c.Seek(prefix); k != nil && hasPrefix(k, prefix); k, _ = c.Next() {
+				toDelete = append(toDelete, append([]byte(nil), k...))
+			}
+			for _, k := range toDelete {
+				parts := splitKey(k)
+				if len(parts) == 3 {
+					_ = ops.Delete(opsKey(parts[2], parts[1], parts[0]))
+				}
+				_ = spo.Delete(k)
+			}
+		}
+		return nil
+	})
 }

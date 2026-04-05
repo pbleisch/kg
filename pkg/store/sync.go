@@ -152,6 +152,15 @@ func SyncWithResult(kgDir string) (*SyncResult, error) {
 	entitiesDir := filepath.Join(kgDir, "entities")
 	currentFiles := make(map[string]struct{})
 
+	// Collect changed entities during walk, then batch-write to index.
+	var toUpsert []*Entity
+	type fileInfo struct {
+		rel      string
+		checksum string
+		modTime  time.Time
+	}
+	var upsertInfo []fileInfo
+
 	// Walk all YAML files under entities/.
 	err = filepath.WalkDir(entitiesDir, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -208,17 +217,6 @@ func SyncWithResult(kgDir string) (*SyncResult, error) {
 			return nil
 		}
 
-		// For updates, remove old quads first.
-		if exists {
-			_ = idx.RemoveEntity(e.ID)
-		}
-
-		if err := idx.AddEntity(&e); err != nil {
-			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: index: %v", rel, err))
-			result.Skipped++
-			return nil
-		}
-
 		info, err := d.Info()
 		if err != nil {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: stat: %v", rel, err))
@@ -226,10 +224,12 @@ func SyncWithResult(kgDir string) (*SyncResult, error) {
 			return nil
 		}
 
-		manifest.Files[rel] = FileEntry{
-			Checksum: checksum,
-			ModTime:  info.ModTime(),
-		}
+		toUpsert = append(toUpsert, &e)
+		upsertInfo = append(upsertInfo, fileInfo{
+			rel:      rel,
+			checksum: checksum,
+			modTime:  info.ModTime(),
+		})
 		result.Synced++
 		return nil
 	})
@@ -237,15 +237,49 @@ func SyncWithResult(kgDir string) (*SyncResult, error) {
 		return result, fmt.Errorf("walking entities: %w", err)
 	}
 
-	// Remove entries for files that no longer exist on disk.
+	// Batch-write changed entities to index.
+	if len(toUpsert) > 0 {
+		if bi, ok := idx.(BatchIndexer); ok {
+			if err := bi.UpsertEntities(toUpsert); err != nil {
+				return result, fmt.Errorf("batch upsert: %w", err)
+			}
+		} else {
+			for _, e := range toUpsert {
+				if err := idx.UpsertEntity(e); err != nil {
+					result.Warnings = append(result.Warnings, fmt.Sprintf("%s: index: %v", e.ID, err))
+				}
+			}
+		}
+		for _, fi := range upsertInfo {
+			manifest.Files[fi.rel] = FileEntry{
+				Checksum: fi.checksum,
+				ModTime:  fi.modTime,
+			}
+		}
+	}
+
+	// Collect deleted files and batch-remove from index.
+	var toRemoveIDs []string
+	var toRemoveRels []string
 	for rel := range manifest.Files {
 		if _, ok := currentFiles[rel]; !ok {
-			// Derive entity ID from path to remove from index.
 			if e := entityFromRelPath(kgDir, rel); e != nil {
-				_ = idx.RemoveEntity(e.ID)
+				toRemoveIDs = append(toRemoveIDs, e.ID)
 			}
-			delete(manifest.Files, rel)
+			toRemoveRels = append(toRemoveRels, rel)
 			result.Removed++
+		}
+	}
+	if len(toRemoveIDs) > 0 {
+		if bi, ok := idx.(BatchIndexer); ok {
+			_ = bi.RemoveEntities(toRemoveIDs)
+		} else {
+			for _, id := range toRemoveIDs {
+				_ = idx.RemoveEntity(id)
+			}
+		}
+		for _, rel := range toRemoveRels {
+			delete(manifest.Files, rel)
 		}
 	}
 
@@ -296,6 +330,15 @@ func RebuildWithResult(kgDir string) (*SyncResult, error) {
 	// Walk files directly instead of using ListEntities so we can skip
 	// malformed files without aborting the entire rebuild.
 	entitiesDir := filepath.Join(kgDir, "entities")
+
+	var toAdd []*Entity
+	type rebuildInfo struct {
+		rel      string
+		checksum string
+		modTime  time.Time
+	}
+	var addInfo []rebuildInfo
+
 	err = filepath.WalkDir(entitiesDir, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			if os.IsNotExist(walkErr) && path == entitiesDir {
@@ -323,43 +366,59 @@ func RebuildWithResult(kgDir string) (*SyncResult, error) {
 			return nil
 		}
 
-		if err := idx.AddEntity(&e); err != nil {
-			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: index: %v", path, err))
-			result.Skipped++
-			return nil
-		}
-
 		rel, err := filepath.Rel(kgDir, path)
 		if err != nil {
-			// Entity indexed but can't track in manifest.
 			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: relative path: %v", path, err))
-			result.Synced++
+			result.Skipped++
 			return nil
 		}
 
 		checksum, err := fileChecksum(path)
 		if err != nil {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: checksum: %v", path, err))
-			result.Synced++
+			result.Skipped++
 			return nil
 		}
 
 		info, err := os.Stat(path)
 		if err != nil {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: stat: %v", path, err))
-			result.Synced++
+			result.Skipped++
 			return nil
 		}
 
-		manifest.Files[rel] = FileEntry{
-			Checksum: checksum,
-			ModTime:  info.ModTime(),
-		}
+		toAdd = append(toAdd, &e)
+		addInfo = append(addInfo, rebuildInfo{
+			rel:      rel,
+			checksum: checksum,
+			modTime:  info.ModTime(),
+		})
 		result.Synced++
 		return nil
 	})
 	if err != nil {
 		return result, fmt.Errorf("walking entities: %w", err)
+	}
+
+	// Batch-add all entities to the index.
+	if len(toAdd) > 0 {
+		if bi, ok := idx.(BatchIndexer); ok {
+			if err := bi.UpsertEntities(toAdd); err != nil {
+				return result, fmt.Errorf("batch add: %w", err)
+			}
+		} else {
+			for _, e := range toAdd {
+				if err := idx.AddEntity(e); err != nil {
+					result.Warnings = append(result.Warnings, fmt.Sprintf("%s: index: %v", e.ID, err))
+				}
+			}
+		}
+		for _, ri := range addInfo {
+			manifest.Files[ri.rel] = FileEntry{
+				Checksum: ri.checksum,
+				ModTime:  ri.modTime,
+			}
+		}
 	}
 
 	manifest.SyncedAt = time.Now()

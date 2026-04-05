@@ -31,6 +31,12 @@ are rewritten to point to target. The source entity is then deleted.`,
 				CrossType:    crossType,
 			}
 
+			// Open index for fast incoming-link lookup.
+			if idx, err := store.OpenIndex(cfg.kgDir); err == nil {
+				opts.Idx = idx
+				defer idx.Close()
+			}
+
 			result, err := command.Merge(cfg.kgDir, store.NormalizeEntityID(args[0]), store.NormalizeEntityID(args[1]), opts)
 			if err != nil {
 				return err

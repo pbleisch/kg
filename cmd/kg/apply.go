@@ -153,12 +153,10 @@ func init() {
 			var dedupCount int
 			var applyErrors []string
 
-			// Open index once for dedup vector search (if needed).
-			var dedupIdx store.Indexer
-			if onConflict == "dedup" {
-				if idx, err := store.OpenIndex(cfg.kgDir); err == nil {
-					dedupIdx = idx
-				}
+			// Open index once for dedup vector search and merge referrer lookups.
+			var applyIdx store.Indexer
+			if idx, err := store.OpenIndex(cfg.kgDir); err == nil {
+				applyIdx = idx
 			}
 
 			store.BeginBatch()
@@ -187,7 +185,7 @@ func init() {
 				case "create":
 					if onConflict == "dedup" {
 						var remapTo string
-						actionErr, remapTo = applyCreateDedup(a, dedupFields, dedupThreshold, dedupIdx)
+						actionErr, remapTo = applyCreateDedup(a, dedupFields, dedupThreshold, applyIdx)
 						if remapTo != "" && a.Entity != nil {
 							idRemap[a.Entity.ID] = remapTo
 							dedupCount++
@@ -201,7 +199,7 @@ func init() {
 				case "upsert":
 					if onConflict == "dedup" {
 						var remapTo string
-						actionErr, remapTo = applyCreateDedup(a, dedupFields, dedupThreshold, dedupIdx)
+						actionErr, remapTo = applyCreateDedup(a, dedupFields, dedupThreshold, applyIdx)
 						if remapTo != "" && a.Entity != nil {
 							idRemap[a.Entity.ID] = remapTo
 							dedupCount++
@@ -243,6 +241,7 @@ func init() {
 						opts := command.MergeOptions{
 							PreferSource: a.Prefer == "source",
 							CrossType:    true,
+							Idx:          applyIdx,
 						}
 						if _, err := command.Merge(cfg.kgDir, a.From, a.Target, opts); err != nil {
 							actionErr = fmt.Errorf("merging %s→%s: %w", a.From, a.Target, err)
@@ -278,10 +277,10 @@ func init() {
 			if dedupCount > 0 && !cfg.quiet {
 				fmt.Fprintf(cmd.OutOrStdout(), "%d action(s) deduped\n", dedupCount)
 			}
-			// Close dedup index before final sync to release lock.
-			if dedupIdx != nil {
-				dedupIdx.Close()
-				dedupIdx = nil
+			// Close index before final sync to release lock.
+			if applyIdx != nil {
+				applyIdx.Close()
+				applyIdx = nil
 			}
 			// End batch mode — triggers a single final sync.
 			if err := store.EndBatch(cfg.kgDir); err != nil {
@@ -488,7 +487,7 @@ func applyCreateDedup(a Action, dedupFields []string, threshold float64, dedupId
 				}
 			}
 			if bestScore >= threshold && bestID != "" && bestID != a.Entity.ID {
-				mergeOpts := command.MergeOptions{CrossType: true}
+				mergeOpts := command.MergeOptions{CrossType: true, Idx: dedupIdx}
 				if err := store.WriteEntity(cfg.kgDir, a.Entity); err != nil {
 					return fmt.Errorf("writing entity for merge: %w", err), ""
 				}
@@ -545,13 +544,10 @@ func applyCreateDedup(a Action, dedupFields []string, threshold float64, dedupId
 	if bestScore >= threshold && bestID != "" {
 		// Dedup: merge into existing entity.
 		_ = bestField
-		mergeOpts := command.MergeOptions{CrossType: true}
+		mergeOpts := command.MergeOptions{CrossType: true, Idx: dedupIdx}
 		// First create the entity so Merge can read it.
 		if err := store.WriteEntity(cfg.kgDir, a.Entity); err != nil {
 			return fmt.Errorf("writing entity for merge: %w", err), ""
-		}
-		if err := store.Sync(cfg.kgDir); err != nil {
-			return fmt.Errorf("syncing before merge: %w", err), ""
 		}
 		_, err := command.Merge(cfg.kgDir, a.Entity.ID, bestID, mergeOpts)
 		if err != nil {

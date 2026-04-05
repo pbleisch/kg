@@ -20,6 +20,9 @@ type MergeOptions struct {
 	PreferSource bool
 	DryRun       bool
 	CrossType    bool
+	// Idx is an optional pre-opened index. When provided, merge uses it to
+	// find incoming links via FindReferrers instead of scanning all YAML files.
+	Idx store.Indexer
 }
 
 // Merge combines source into target, rewriting all incoming links, then
@@ -73,31 +76,64 @@ func Merge(kgDir, sourceID, targetID string, opts MergeOptions) (*MergeResult, e
 	}
 
 	// Find all entities that link to source and rewrite those links.
-	allEntities, err := store.ListEntities(kgDir)
-	if err != nil {
-		return nil, fmt.Errorf("listing entities for incoming link scan: %w", err)
-	}
-
 	var toUpdate []*store.Entity
-	for _, e := range allEntities {
-		if e.ID == sourceID || e.ID == targetID {
-			continue
+	if opts.Idx != nil {
+		// Fast path: use index to find referrers instead of scanning all YAML.
+		referrerIDs, err := opts.Idx.FindReferrers(sourceID)
+		if err != nil {
+			return nil, fmt.Errorf("finding referrers of %s: %w", sourceID, err)
 		}
-		changed := false
-		for relName, targets := range e.Relations {
-			for i, t := range targets {
-				if t == sourceID {
-					targets[i] = targetID
-					changed = true
-					result.IncomingRewritten++
+		for _, refID := range referrerIDs {
+			if refID == sourceID || refID == targetID {
+				continue
+			}
+			e, err := store.ReadEntity(kgDir, refID)
+			if err != nil {
+				continue // entity may have been deleted during batch
+			}
+			changed := false
+			for relName, targets := range e.Relations {
+				for i, t := range targets {
+					if t == sourceID {
+						targets[i] = targetID
+						changed = true
+						result.IncomingRewritten++
+					}
+				}
+				if changed {
+					e.Relations[relName] = dedupStrings(targets)
 				}
 			}
 			if changed {
-				e.Relations[relName] = dedupStrings(targets)
+				toUpdate = append(toUpdate, e)
 			}
 		}
-		if changed {
-			toUpdate = append(toUpdate, e)
+	} else {
+		// Fallback: scan all entities from YAML (slow on large KGs).
+		allEntities, err := store.ListEntities(kgDir)
+		if err != nil {
+			return nil, fmt.Errorf("listing entities for incoming link scan: %w", err)
+		}
+		for _, e := range allEntities {
+			if e.ID == sourceID || e.ID == targetID {
+				continue
+			}
+			changed := false
+			for relName, targets := range e.Relations {
+				for i, t := range targets {
+					if t == sourceID {
+						targets[i] = targetID
+						changed = true
+						result.IncomingRewritten++
+					}
+				}
+				if changed {
+					e.Relations[relName] = dedupStrings(targets)
+				}
+			}
+			if changed {
+				toUpdate = append(toUpdate, e)
+			}
 		}
 	}
 

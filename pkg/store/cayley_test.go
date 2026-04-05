@@ -191,3 +191,181 @@ func TestCacheDirCreated(t *testing.T) {
 		}
 	}
 }
+
+func TestFindReferrers(t *testing.T) {
+	idx := tempIndex(t)
+
+	entities := []*Entity{
+		{ID: "alice", Type: "person", Relations: map[string][]string{"knows": {"bob"}, "works_with": {"bob"}}},
+		{ID: "carol", Type: "person", Relations: map[string][]string{"knows": {"bob"}}},
+		{ID: "dave", Type: "person", Relations: map[string][]string{"knows": {"carol"}}},
+		{ID: "bob", Type: "person"},
+	}
+	for _, e := range entities {
+		if err := idx.AddEntity(e); err != nil {
+			t.Fatalf("AddEntity(%s): %v", e.ID, err)
+		}
+	}
+
+	// Bob is referenced by alice (knows + works_with) and carol (knows).
+	refs, err := idx.FindReferrers("bob")
+	if err != nil {
+		t.Fatalf("FindReferrers(bob): %v", err)
+	}
+	slices.Sort(refs)
+	if len(refs) != 2 || refs[0] != "alice" || refs[1] != "carol" {
+		t.Errorf("FindReferrers(bob) = %v, want [alice carol]", refs)
+	}
+
+	// Carol is referenced only by dave.
+	refs, err = idx.FindReferrers("carol")
+	if err != nil {
+		t.Fatalf("FindReferrers(carol): %v", err)
+	}
+	if len(refs) != 1 || refs[0] != "dave" {
+		t.Errorf("FindReferrers(carol) = %v, want [dave]", refs)
+	}
+
+	// Nobody references alice.
+	refs, err = idx.FindReferrers("alice")
+	if err != nil {
+		t.Fatalf("FindReferrers(alice): %v", err)
+	}
+	if len(refs) != 0 {
+		t.Errorf("FindReferrers(alice) = %v, want []", refs)
+	}
+}
+
+func TestUpsertEntity(t *testing.T) {
+	idx := tempIndex(t)
+
+	e := &Entity{
+		ID:         "alice",
+		Type:       "person",
+		Attributes: map[string]any{"name": "Alice", "age": "30"},
+		Relations:  map[string][]string{"knows": {"bob"}},
+	}
+	if err := idx.AddEntity(e); err != nil {
+		t.Fatalf("AddEntity: %v", err)
+	}
+
+	// Upsert with changed data.
+	e2 := &Entity{
+		ID:         "alice",
+		Type:       "person",
+		Attributes: map[string]any{"name": "Alice Smith", "email": "alice@example.com"},
+		Relations:  map[string][]string{"knows": {"carol"}},
+	}
+	if err := idx.UpsertEntity(e2); err != nil {
+		t.Fatalf("UpsertEntity: %v", err)
+	}
+
+	got, err := idx.GetEntity("alice")
+	if err != nil {
+		t.Fatalf("GetEntity: %v", err)
+	}
+	if got.Attributes["name"] != "Alice Smith" {
+		t.Errorf("name = %v, want Alice Smith", got.Attributes["name"])
+	}
+	if got.Attributes["email"] != "alice@example.com" {
+		t.Errorf("email = %v, want alice@example.com", got.Attributes["email"])
+	}
+	// Old attribute should be gone.
+	if _, ok := got.Attributes["age"]; ok {
+		t.Errorf("age should have been removed by upsert")
+	}
+	// Old relation should be gone.
+	if knows := got.Relations["knows"]; len(knows) != 1 || knows[0] != "carol" {
+		t.Errorf("knows = %v, want [carol]", knows)
+	}
+}
+
+func TestBatchUpsertEntities(t *testing.T) {
+	idx := tempIndex(t)
+
+	// Add initial entities.
+	initial := []*Entity{
+		{ID: "alice", Type: "person", Attributes: map[string]any{"name": "Alice"}},
+		{ID: "bob", Type: "person", Attributes: map[string]any{"name": "Bob"}},
+	}
+	for _, e := range initial {
+		if err := idx.AddEntity(e); err != nil {
+			t.Fatalf("AddEntity(%s): %v", e.ID, err)
+		}
+	}
+
+	bi, ok := idx.(BatchIndexer)
+	if !ok {
+		t.Skip("index does not implement BatchIndexer")
+	}
+
+	// Batch upsert: update alice, add carol.
+	batch := []*Entity{
+		{ID: "alice", Type: "person", Attributes: map[string]any{"name": "Alice Updated"}},
+		{ID: "carol", Type: "person", Attributes: map[string]any{"name": "Carol"}},
+	}
+	if err := bi.UpsertEntities(batch); err != nil {
+		t.Fatalf("UpsertEntities: %v", err)
+	}
+
+	// Verify alice updated.
+	got, err := idx.GetEntity("alice")
+	if err != nil {
+		t.Fatalf("GetEntity(alice): %v", err)
+	}
+	if got.Attributes["name"] != "Alice Updated" {
+		t.Errorf("alice name = %v, want Alice Updated", got.Attributes["name"])
+	}
+
+	// Verify carol added.
+	got, err = idx.GetEntity("carol")
+	if err != nil {
+		t.Fatalf("GetEntity(carol): %v", err)
+	}
+	if got.Attributes["name"] != "Carol" {
+		t.Errorf("carol name = %v, want Carol", got.Attributes["name"])
+	}
+
+	// Verify bob unchanged.
+	got, err = idx.GetEntity("bob")
+	if err != nil {
+		t.Fatalf("GetEntity(bob): %v", err)
+	}
+	if got.Attributes["name"] != "Bob" {
+		t.Errorf("bob name = %v, want Bob", got.Attributes["name"])
+	}
+}
+
+func TestBatchRemoveEntities(t *testing.T) {
+	idx := tempIndex(t)
+
+	entities := []*Entity{
+		{ID: "alice", Type: "person", Relations: map[string][]string{"knows": {"bob"}}},
+		{ID: "bob", Type: "person"},
+		{ID: "carol", Type: "person"},
+	}
+	for _, e := range entities {
+		if err := idx.AddEntity(e); err != nil {
+			t.Fatalf("AddEntity(%s): %v", e.ID, err)
+		}
+	}
+
+	bi, ok := idx.(BatchIndexer)
+	if !ok {
+		t.Skip("index does not implement BatchIndexer")
+	}
+
+	if err := bi.RemoveEntities([]string{"alice", "carol"}); err != nil {
+		t.Fatalf("RemoveEntities: %v", err)
+	}
+
+	if _, err := idx.GetEntity("alice"); err == nil {
+		t.Error("alice should have been removed")
+	}
+	if _, err := idx.GetEntity("carol"); err == nil {
+		t.Error("carol should have been removed")
+	}
+	if _, err := idx.GetEntity("bob"); err != nil {
+		t.Errorf("bob should still exist: %v", err)
+	}
+}

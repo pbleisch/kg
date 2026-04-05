@@ -13,6 +13,10 @@ type Indexer interface {
 	// RemoveEntity removes all indexed data for the given entity ID.
 	RemoveEntity(id string) error
 
+	// UpsertEntity removes old indexed data and adds new data for an entity
+	// in a single atomic operation, avoiding two separate transactions.
+	UpsertEntity(e *Entity) error
+
 	// GetEntity reconstructs an entity from indexed data.
 	GetEntity(id string) (*Entity, error)
 
@@ -22,4 +26,17 @@ type Indexer interface {
 	// FindByRelationTarget returns IDs of entities that point to targetID
 	// via the named relation.
 	FindByRelationTarget(relation, targetID string) ([]string, error)
+
+	// FindReferrers returns IDs of entities that point to the given entity
+	// via any relation. Used by merge to efficiently find incoming links
+	// without scanning all entities on disk.
+	FindReferrers(id string) ([]string, error)
+}
+
+// BatchIndexer is an optional interface for backends that support batched
+// writes in a single transaction, reducing per-entity transaction overhead.
+type BatchIndexer interface {
+	Indexer
+	UpsertEntities(entities []*Entity) error
+	RemoveEntities(ids []string) error
 }
