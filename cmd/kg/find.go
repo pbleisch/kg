@@ -13,7 +13,7 @@ import (
 
 func init() {
 	var limit, offset int
-	var includeEmbeddings bool
+	var includeEmbeddings, includeRelations bool
 
 	cmd := &cobra.Command{
 		Use:   "find <type> [where <filters...>]",
@@ -47,6 +47,7 @@ func init() {
 				Limit:             limit,
 				Offset:            offset,
 				IncludeEmbeddings: includeEmbeddings,
+				IncludeRelations:  includeRelations,
 			}
 
 			entities, err := query.FindWithOpts(cfg.kgDir, typeName, opts)
@@ -61,6 +62,7 @@ func init() {
 	cmd.Flags().IntVar(&limit, "limit", 0, "maximum number of results (0 = no limit)")
 	cmd.Flags().IntVar(&offset, "offset", 0, "skip this many results")
 	cmd.Flags().BoolVar(&includeEmbeddings, "include-embeddings", false, "include embedding vectors in output")
+	cmd.Flags().BoolVar(&includeRelations, "include-relations", false, "include entity relations in output")
 
 	rootCmd.AddCommand(cmd)
 }

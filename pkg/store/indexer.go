@@ -62,8 +62,9 @@ type AttrFilter struct {
 type QueryOptions struct {
 	Filters           []AttrFilter `json:"filters,omitempty"`
 	Offset            int          `json:"offset,omitempty"`
-	Limit             int          `json:"limit,omitempty"`  // 0 = no limit
-	IncludeEmbeddings bool        `json:"include_embeddings,omitempty"`
+	Limit             int          `json:"limit,omitempty"` // 0 = no limit
+	IncludeEmbeddings bool         `json:"include_embeddings,omitempty"`
+	IncludeRelations  bool         `json:"include_relations,omitempty"`
 }
 
 // MatchFilters returns true if the entity satisfies all filters.
@@ -143,6 +144,9 @@ func DefaultFindEntities(idx Indexer, typeName string, opts QueryOptions) ([]*En
 		}
 		if !opts.IncludeEmbeddings {
 			StripEmbeddings(e)
+		}
+		if !opts.IncludeRelations {
+			e.Relations = nil
 		}
 		results = append(results, e)
 		matched++

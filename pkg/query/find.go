@@ -38,7 +38,10 @@ func ParseFilter(expr string) (Filter, error) {
 // Find searches for entities of the given type that match all filters.
 // The typeName is expected to be snake_case (normalized at the CLI edge).
 func Find(kgDir, typeName string, filters []Filter) ([]*store.Entity, error) {
-	return FindWithOpts(kgDir, typeName, store.QueryOptions{Filters: filters})
+	return FindWithOpts(kgDir, typeName, store.QueryOptions{
+		Filters:          filters,
+		IncludeRelations: true,
+	})
 }
 
 // FindWithOpts is like Find but accepts full QueryOptions for pagination

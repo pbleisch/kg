@@ -307,14 +307,17 @@ func (idx *ladybugIndex) FindEntities(typeName string, opts QueryOptions) ([]*En
 	}
 	defer qResult.Close()
 
-	// Prepare the relation query once, reuse for each entity.
-	relStmt, err := idx.conn.Prepare(
-		"MATCH (n:Entity {id: $id})-[r:HasRel]->(t:Entity) RETURN r.name, t.id",
-	)
-	if err != nil {
-		relStmt = nil // proceed without relations
-	} else {
-		defer relStmt.Close()
+	// Prepare the relation query once if relations are requested.
+	var relStmt *lbug.PreparedStatement
+	if opts.IncludeRelations {
+		relStmt, err = idx.conn.Prepare(
+			"MATCH (n:Entity {id: $id})-[r:HasRel]->(t:Entity) RETURN r.name, t.id",
+		)
+		if err != nil {
+			relStmt = nil
+		} else {
+			defer relStmt.Close()
+		}
 	}
 
 	var results []*Entity
