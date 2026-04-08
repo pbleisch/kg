@@ -29,9 +29,9 @@ type Indexer interface {
 	// FindByType returns IDs of all entities with the given type.
 	FindByType(typeName string) ([]string, error)
 
-	// FindEntities returns entities of the given type matching all filters.
-	// Filters are evaluated server-side to avoid N+1 round-trips over RPC.
-	FindEntities(typeName string, filters []AttrFilter) ([]*Entity, error)
+	// FindEntities returns entities of the given type matching the query options.
+	// Supports filters, pagination, and embedding control.
+	FindEntities(typeName string, opts QueryOptions) ([]*Entity, error)
 
 	// FindByRelationTarget returns IDs of entities that point to targetID
 	// via the named relation.
@@ -58,7 +58,15 @@ type AttrFilter struct {
 	Value string `json:"value"`
 }
 
-// MatchEntity returns true if the entity satisfies all filters.
+// QueryOptions controls FindEntities behavior.
+type QueryOptions struct {
+	Filters           []AttrFilter `json:"filters,omitempty"`
+	Offset            int          `json:"offset,omitempty"`
+	Limit             int          `json:"limit,omitempty"`  // 0 = no limit
+	IncludeEmbeddings bool        `json:"include_embeddings,omitempty"`
+}
+
+// MatchFilters returns true if the entity satisfies all filters.
 func MatchFilters(e *Entity, filters []AttrFilter) bool {
 	for _, f := range filters {
 		if !matchFilter(e, f) {
@@ -101,22 +109,45 @@ func matchFilter(e *Entity, f AttrFilter) bool {
 	return false
 }
 
+// StripEmbeddings removes embedding fields (keys ending in _embedding)
+// from entity attributes.
+func StripEmbeddings(e *Entity) {
+	for k := range e.Attributes {
+		if strings.HasSuffix(k, "_embedding") {
+			delete(e.Attributes, k)
+		}
+	}
+}
+
 // DefaultFindEntities provides the standard FindEntities implementation
-// using FindByType + GetEntity + filter. Index backends that don't override
-// FindEntities can delegate to this.
-func DefaultFindEntities(idx Indexer, typeName string, filters []AttrFilter) ([]*Entity, error) {
+// using FindByType + GetEntity + filter + pagination + embedding strip.
+func DefaultFindEntities(idx Indexer, typeName string, opts QueryOptions) ([]*Entity, error) {
 	ids, err := idx.FindByType(typeName)
 	if err != nil {
 		return nil, err
 	}
 	var results []*Entity
+	matched := 0
 	for _, id := range ids {
 		e, err := idx.GetEntity(id)
 		if err != nil {
 			return nil, fmt.Errorf("getting entity %s: %w", id, err)
 		}
-		if MatchFilters(e, filters) {
-			results = append(results, e)
+		if !MatchFilters(e, opts.Filters) {
+			continue
+		}
+		// Pagination: skip offset entries
+		if matched < opts.Offset {
+			matched++
+			continue
+		}
+		if !opts.IncludeEmbeddings {
+			StripEmbeddings(e)
+		}
+		results = append(results, e)
+		matched++
+		if opts.Limit > 0 && len(results) >= opts.Limit {
+			break
 		}
 	}
 	return results, nil

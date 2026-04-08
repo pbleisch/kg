@@ -63,7 +63,7 @@ type FindByRelTargetArgs struct {
 
 type FindEntitiesArgs struct {
 	TypeName string
-	Filters  []store.AttrFilter
+	Opts     store.QueryOptions
 }
 
 type FindEntitiesReply struct {

@@ -38,7 +38,7 @@ type rpcFindByTypeArgs struct{ TypeName string }
 
 type rpcFindEntitiesArgs struct {
 	TypeName string
-	Filters  []AttrFilter
+	Opts     QueryOptions
 }
 type rpcFindEntitiesReply struct{ Entities []*Entity }
 
@@ -128,9 +128,9 @@ func (r *remoteIndex) FindByType(typeName string) ([]string, error) {
 	return reply.IDs, nil
 }
 
-func (r *remoteIndex) FindEntities(typeName string, filters []AttrFilter) ([]*Entity, error) {
+func (r *remoteIndex) FindEntities(typeName string, opts QueryOptions) ([]*Entity, error) {
 	var reply rpcFindEntitiesReply
-	if err := r.call("FindEntities", &rpcFindEntitiesArgs{TypeName: typeName, Filters: filters}, &reply); err != nil {
+	if err := r.call("FindEntities", &rpcFindEntitiesArgs{TypeName: typeName, Opts: opts}, &reply); err != nil {
 		return nil, err
 	}
 	return reply.Entities, nil

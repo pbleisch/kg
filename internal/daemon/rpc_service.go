@@ -58,7 +58,7 @@ func (s *IndexService) FindByRelationTarget(args *FindByRelTargetArgs, reply *ID
 func (s *IndexService) FindEntities(args *FindEntitiesArgs, reply *FindEntitiesReply) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	entities, err := s.idx.FindEntities(args.TypeName, args.Filters)
+	entities, err := s.idx.FindEntities(args.TypeName, args.Opts)
 	if err != nil {
 		return err
 	}

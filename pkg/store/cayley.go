@@ -224,8 +224,8 @@ func (idx *boltIndex) FindByType(typeName string) ([]string, error) {
 	return ids, err
 }
 
-func (idx *boltIndex) FindEntities(typeName string, filters []AttrFilter) ([]*Entity, error) {
-	return DefaultFindEntities(idx, typeName, filters)
+func (idx *boltIndex) FindEntities(typeName string, opts QueryOptions) ([]*Entity, error) {
+	return DefaultFindEntities(idx, typeName, opts)
 }
 
 func hasPrefix(b, prefix []byte) bool {

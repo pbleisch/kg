@@ -279,8 +279,103 @@ func (idx *ladybugIndex) FindByType(typeName string) ([]string, error) {
 	return ids, nil
 }
 
-func (idx *ladybugIndex) FindEntities(typeName string, filters []AttrFilter) ([]*Entity, error) {
-	return DefaultFindEntities(idx, typeName, filters)
+func (idx *ladybugIndex) FindEntities(typeName string, opts QueryOptions) ([]*Entity, error) {
+	// When no attribute filters, push SKIP/LIMIT into Cypher so the DB
+	// engine avoids materializing all rows.
+	canPushPagination := len(opts.Filters) == 0
+
+	cypher := "MATCH (n:Entity) WHERE n.type = $type RETURN n.id, n.attrs"
+	params := map[string]any{"type": typeName}
+	if canPushPagination {
+		if opts.Offset > 0 {
+			cypher += fmt.Sprintf(" SKIP %d", opts.Offset)
+		}
+		if opts.Limit > 0 {
+			cypher += fmt.Sprintf(" LIMIT %d", opts.Limit)
+		}
+	}
+
+	stmt, err := idx.conn.Prepare(cypher)
+	if err != nil {
+		return DefaultFindEntities(idx, typeName, opts)
+	}
+	defer stmt.Close()
+
+	qResult, err := idx.conn.Execute(stmt, params)
+	if err != nil {
+		return DefaultFindEntities(idx, typeName, opts)
+	}
+	defer qResult.Close()
+
+	var results []*Entity
+	matched := 0
+	for qResult.HasNext() {
+		tuple, err := qResult.Next()
+		if err != nil {
+			continue
+		}
+		idVal, _ := tuple.GetValue(0)
+		attrsVal, _ := tuple.GetValue(1)
+		tuple.Close()
+
+		id := fmt.Sprint(idVal)
+		attrs := make(map[string]any)
+		if attrsStr, ok := attrsVal.(string); ok && attrsStr != "" && attrsStr != "{}" {
+			if err := json.Unmarshal([]byte(attrsStr), &attrs); err != nil {
+				continue
+			}
+		}
+
+		e := &Entity{
+			ID:         id,
+			Type:       typeName,
+			Attributes: attrs,
+		}
+
+		// Client-side filter + pagination when filters prevent Cypher push-down
+		if !canPushPagination {
+			if !MatchFilters(e, opts.Filters) {
+				continue
+			}
+			if matched < opts.Offset {
+				matched++
+				continue
+			}
+		}
+
+		// Fetch relations for this entity
+		e.Relations = make(map[string][]string)
+		relStmt, err := idx.conn.Prepare(
+			"MATCH (n:Entity {id: $id})-[r:HasRel]->(t:Entity) RETURN r.name, t.id",
+		)
+		if err == nil {
+			relResult, err := idx.conn.Execute(relStmt, map[string]any{"id": id})
+			if err == nil {
+				for relResult.HasNext() {
+					rt, err := relResult.Next()
+					if err != nil {
+						break
+					}
+					relName, _ := rt.GetValue(0)
+					targetID, _ := rt.GetValue(1)
+					rt.Close()
+					e.Relations[fmt.Sprint(relName)] = append(e.Relations[fmt.Sprint(relName)], fmt.Sprint(targetID))
+				}
+				relResult.Close()
+			}
+			relStmt.Close()
+		}
+
+		if !opts.IncludeEmbeddings {
+			StripEmbeddings(e)
+		}
+		results = append(results, e)
+		matched++
+		if !canPushPagination && opts.Limit > 0 && len(results) >= opts.Limit {
+			break
+		}
+	}
+	return results, nil
 }
 
 // SimilarEntities implements VectorSearcher. It loads all entities of the
