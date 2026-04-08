@@ -224,6 +224,10 @@ func (idx *boltIndex) FindByType(typeName string) ([]string, error) {
 	return ids, err
 }
 
+func (idx *boltIndex) FindEntities(typeName string, filters []AttrFilter) ([]*Entity, error) {
+	return DefaultFindEntities(idx, typeName, filters)
+}
+
 func hasPrefix(b, prefix []byte) bool {
 	return len(b) >= len(prefix) && string(b[:len(prefix)]) == string(prefix)
 }

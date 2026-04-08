@@ -279,6 +279,10 @@ func (idx *ladybugIndex) FindByType(typeName string) ([]string, error) {
 	return ids, nil
 }
 
+func (idx *ladybugIndex) FindEntities(typeName string, filters []AttrFilter) ([]*Entity, error) {
+	return DefaultFindEntities(idx, typeName, filters)
+}
+
 // SimilarEntities implements VectorSearcher. It loads all entities of the
 // given type in a single bulk query, extracts vectors from the specified
 // fields (falling back to <field>_embedding if the bare name is absent),

@@ -2,7 +2,6 @@ package query
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/pbleisch/kg/pkg/schema"
@@ -10,11 +9,7 @@ import (
 )
 
 // Filter describes a single attribute filter for a find query.
-type Filter struct {
-	Attr  string
-	Op    string
-	Value string
-}
+type Filter = store.AttrFilter
 
 // opTokens lists the operators in the order they should be tried when parsing.
 // Longer operators must come first to avoid partial matches.
@@ -53,18 +48,18 @@ func Find(kgDir, typeName string, filters []Filter) ([]*store.Entity, error) {
 	}
 	defer idx.Close()
 
-	ids, err := idx.FindByType(typeName)
+	results, err := idx.FindEntities(typeName, filters)
 	if err != nil {
 		return nil, fmt.Errorf("finding type %s: %w", typeName, err)
 	}
 
 	// If no entities found, attempt case-insensitive resolution using schemas.
-	if len(ids) == 0 {
+	if len(results) == 0 {
 		if schemas, serr := schema.LoadAllSchemas(kgDir); serr == nil {
 			for name := range schemas {
 				if strings.EqualFold(name, typeName) && name != typeName {
-					if ids2, err2 := idx.FindByType(name); err2 == nil && len(ids2) > 0 {
-						ids = ids2
+					if r2, err2 := idx.FindEntities(name, filters); err2 == nil && len(r2) > 0 {
+						results = r2
 						break
 					}
 				}
@@ -72,65 +67,5 @@ func Find(kgDir, typeName string, filters []Filter) ([]*store.Entity, error) {
 		}
 	}
 
-	var results []*store.Entity
-	for _, id := range ids {
-		e, err := idx.GetEntity(id)
-		if err != nil {
-			return nil, fmt.Errorf("getting entity %s: %w", id, err)
-		}
-		if matchAll(e, filters) {
-			results = append(results, e)
-		}
-	}
 	return results, nil
-}
-
-func matchAll(e *store.Entity, filters []Filter) bool {
-	for _, f := range filters {
-		if !matchFilter(e, f) {
-			return false
-		}
-	}
-	return true
-}
-
-func matchFilter(e *store.Entity, f Filter) bool {
-	raw, ok := e.Attributes[f.Attr]
-	if !ok {
-		return false
-	}
-
-	attrStr := fmt.Sprintf("%v", raw)
-
-	switch f.Op {
-	case "=":
-		return attrStr == f.Value
-	case "!=":
-		return attrStr != f.Value
-	case "~":
-		return strings.Contains(strings.ToLower(attrStr), strings.ToLower(f.Value))
-	case ">", "<", ">=", "<=":
-		return compareNumeric(attrStr, f.Op, f.Value)
-	default:
-		return false
-	}
-}
-
-func compareNumeric(attrStr, op, filterVal string) bool {
-	a, errA := strconv.ParseFloat(attrStr, 64)
-	b, errB := strconv.ParseFloat(filterVal, 64)
-	if errA != nil || errB != nil {
-		return false
-	}
-	switch op {
-	case ">":
-		return a > b
-	case "<":
-		return a < b
-	case ">=":
-		return a >= b
-	case "<=":
-		return a <= b
-	}
-	return false
 }

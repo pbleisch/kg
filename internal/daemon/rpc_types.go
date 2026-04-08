@@ -59,6 +59,17 @@ type FindByRelTargetArgs struct {
 	TargetID string
 }
 
+// ── FindEntities ────────────────────────────────────────────────────────
+
+type FindEntitiesArgs struct {
+	TypeName string
+	Filters  []store.AttrFilter
+}
+
+type FindEntitiesReply struct {
+	Entities []*store.Entity
+}
+
 // ── FindReferrers ───────────────────────────────────────────────────────
 
 type FindReferrersArgs struct {

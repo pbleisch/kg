@@ -55,6 +55,17 @@ func (s *IndexService) FindByRelationTarget(args *FindByRelTargetArgs, reply *ID
 	return nil
 }
 
+func (s *IndexService) FindEntities(args *FindEntitiesArgs, reply *FindEntitiesReply) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	entities, err := s.idx.FindEntities(args.TypeName, args.Filters)
+	if err != nil {
+		return err
+	}
+	reply.Entities = entities
+	return nil
+}
+
 func (s *IndexService) FindReferrers(args *FindReferrersArgs, reply *IDsReply) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
