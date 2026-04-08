@@ -28,8 +28,7 @@ func autoStartDaemon(kgDir string) {
 		return
 	}
 
-	cmd := exec.Command(exe, "daemon", "start")
-	cmd.Dir = kgDir
+	cmd := exec.Command(exe, "--dir", kgDir, "daemon", "start")
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
