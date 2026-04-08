@@ -27,12 +27,34 @@ type boltIndex struct {
 	db *bolt.DB
 }
 
+// openIndexDirect bypasses daemon detection in OpenIndex. Set to true by
+// the daemon process before opening its own index.
+var openIndexDirect bool
+
+// SetOpenIndexDirect enables or disables direct index opening, bypassing
+// daemon detection. The daemon process calls this before opening its own index.
+func SetOpenIndexDirect(v bool) { openIndexDirect = v }
+
 // OpenIndex opens or creates an index at <kgDir>/.cache/. Returns an Indexer
 // backed by the configured backend. Selection order:
 //  1. Read .kg/config.yaml "backend" field (bolt, ladybug, or auto)
 //  2. If "auto" (default): prefer ladybug if compiled in, else bolt
 //  3. If explicit: use that backend or error if unavailable
 func OpenIndex(kgDir string) (Indexer, error) {
+	// If a daemon is serving this kgDir, connect via RPC instead of
+	// opening the index file directly. This eliminates lock contention.
+	if !openIndexDirect {
+		absDir, _ := filepath.Abs(kgDir)
+		sockPath := rpcSocketPath(absDir)
+		if DaemonAvailable(sockPath) {
+			return DialRemote(sockPath)
+		}
+		// No daemon running — try to start one in the background.
+		// This command uses direct open; the NEXT command will use RPC.
+		autoStartDaemon(absDir)
+	}
+
+	// Fall back to direct index open.
 	backend := readBackendConfig(kgDir)
 	switch backend {
 	case "ladybug":

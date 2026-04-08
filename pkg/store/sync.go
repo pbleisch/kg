@@ -120,8 +120,34 @@ func Sync(kgDir string) error {
 	if atomic.LoadInt32(&batchMode) > 0 {
 		return nil
 	}
+	// If a daemon is keeping the index fresh, skip sync.
+	if daemonRunning(kgDir) {
+		return nil
+	}
 	_, err := SyncWithResult(kgDir)
 	return err
+}
+
+// daemonRunning returns true if a daemon is serving the given kgDir.
+// Uses a quick socket connectivity check.
+func daemonRunning(kgDir string) bool {
+	absDir, err := filepath.Abs(kgDir)
+	if err != nil {
+		return false
+	}
+	return DaemonAvailable(rpcSocketPath(absDir))
+}
+
+// rpcSocketPath returns the Unix socket path for the daemon RPC server.
+// Falls back to a hashed path in the system temp dir when the default
+// path would exceed Unix socket length limits.
+func rpcSocketPath(kgDir string) string {
+	p := filepath.Join(kgDir, ".cache", "daemon-rpc.sock")
+	if len(p) < 100 {
+		return p
+	}
+	h := sha256.Sum256([]byte(kgDir))
+	return filepath.Join(os.TempDir(), fmt.Sprintf("kg-rpc-%x.sock", h[:8]))
 }
 
 // SyncResult collects statistics from a sync or rebuild operation.
@@ -136,13 +162,19 @@ type SyncResult struct {
 // SyncWithResult performs an incremental sync and returns detailed statistics.
 // Malformed entities are skipped with warnings rather than aborting the sync.
 func SyncWithResult(kgDir string) (*SyncResult, error) {
-	result := &SyncResult{}
-
 	idx, err := OpenIndex(kgDir)
 	if err != nil {
 		return nil, fmt.Errorf("opening index: %w", err)
 	}
 	defer idx.Close()
+	return SyncWithIndex(kgDir, idx)
+}
+
+// SyncWithIndex performs an incremental sync using an already-open Indexer.
+// The caller owns the index lifetime — this function will not open or close it.
+// Malformed entities are skipped with warnings rather than aborting the sync.
+func SyncWithIndex(kgDir string, idx Indexer) (*SyncResult, error) {
+	result := &SyncResult{}
 
 	manifest, err := LoadManifest(kgDir)
 	if err != nil {

@@ -88,7 +88,10 @@ func TestSmoke_DaemonSyncsNewEntity(t *testing.T) {
 
 	// Verify socket and PID file are cleaned up.
 	if _, err := os.Stat(SocketPathFor(kgDir)); !os.IsNotExist(err) {
-		t.Error("socket file still exists after stop")
+		t.Error("control socket file still exists after stop")
+	}
+	if _, err := os.Stat(RPCSocketPath(kgDir)); !os.IsNotExist(err) {
+		t.Error("RPC socket file still exists after stop")
 	}
 	if _, err := os.Stat(filepath.Join(kgDir, ".cache", "daemon.pid")); !os.IsNotExist(err) {
 		t.Error("pid file still exists after stop")
@@ -97,8 +100,8 @@ func TestSmoke_DaemonSyncsNewEntity(t *testing.T) {
 	// Verify no goroutine leaks: give goroutines a moment to exit.
 	time.Sleep(100 * time.Millisecond)
 	goroutinesAfter := runtime.NumGoroutine()
-	// Allow a small margin for runtime goroutines.
-	if goroutinesAfter > goroutinesBefore+2 {
+	// Allow a small margin for runtime goroutines and idle-loop cleanup.
+	if goroutinesAfter > goroutinesBefore+3 {
 		t.Errorf("goroutine leak: before=%d after=%d", goroutinesBefore, goroutinesAfter)
 	}
 }

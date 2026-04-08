@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/rpc"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -17,14 +19,24 @@ import (
 
 const debounceDelay = 100 * time.Millisecond
 
+// DefaultIdleTimeout is the duration after which the daemon shuts itself down
+// if no file changes or RPC calls have occurred.
+const DefaultIdleTimeout = 30 * time.Minute
+
 // Daemon watches .kg/entities/ for file changes and auto-syncs the index.
 type Daemon struct {
 	kgDir      string
 	socketPath string
+	rpcPath    string
 	listener   net.Listener
+	rpcLn      net.Listener
+	rpcServer  *rpc.Server
+	service    *IndexService
 	watcher    *fsnotify.Watcher
-	done       chan struct{}
-	wg         sync.WaitGroup
+	done         chan struct{}
+	wg           sync.WaitGroup
+	lastActivity atomic.Int64  // unix timestamp of last activity
+	idleTimeout  time.Duration
 
 	// Subscriber management for watch event streaming.
 	subMu       sync.Mutex
@@ -94,12 +106,48 @@ func Start(kgDir string) (*Daemon, error) {
 		return nil, fmt.Errorf("write pid: %w", err)
 	}
 
+	// Bypass daemon detection for this call only — we ARE the daemon.
+	store.SetOpenIndexDirect(true)
+	idx, err := store.OpenIndex(absDir)
+	store.SetOpenIndexDirect(false)
+	if err != nil {
+		ln.Close()
+		watcher.Close()
+		return nil, fmt.Errorf("open index: %w", err)
+	}
+
+	// Set up RPC service.
+	svc := NewIndexService(absDir, idx)
+	rpcSrv := rpc.NewServer()
+	if err := rpcSrv.Register(svc); err != nil {
+		idx.Close()
+		ln.Close()
+		watcher.Close()
+		return nil, fmt.Errorf("register rpc: %w", err)
+	}
+
+	// Listen on RPC socket.
+	rpcSockPath := RPCSocketPath(absDir)
+	os.Remove(rpcSockPath)
+	rpcLn, err := net.Listen("unix", rpcSockPath)
+	if err != nil {
+		idx.Close()
+		ln.Close()
+		watcher.Close()
+		return nil, fmt.Errorf("listen rpc socket: %w", err)
+	}
+
 	d := &Daemon{
 		kgDir:       absDir,
 		socketPath:  sockPath,
+		rpcPath:     rpcSockPath,
 		listener:    ln,
+		rpcLn:       rpcLn,
+		rpcServer:   rpcSrv,
+		service:     svc,
 		watcher:     watcher,
 		done:        make(chan struct{}),
+		idleTimeout: DefaultIdleTimeout,
 		subscribers: make(map[net.Conn]struct{}),
 		entityCache: make(map[string]*store.Entity),
 	}
@@ -111,9 +159,12 @@ func Start(kgDir string) (*Daemon, error) {
 		}
 	}
 
-	d.wg.Add(2)
+	d.touch()
+	d.wg.Add(4)
 	go d.watchLoop()
 	go d.acceptLoop()
+	go d.rpcAcceptLoop()
+	go d.idleLoop()
 
 	return d, nil
 }
@@ -122,6 +173,7 @@ func Start(kgDir string) (*Daemon, error) {
 func (d *Daemon) Stop() error {
 	close(d.done)
 	d.listener.Close()
+	d.rpcLn.Close()
 	d.watcher.Close()
 	d.wg.Wait()
 	// Close all subscriber connections.
@@ -131,7 +183,10 @@ func (d *Daemon) Stop() error {
 	}
 	d.subscribers = nil
 	d.subMu.Unlock()
+	// Close the held-open index.
+	d.service.idx.Close()
 	os.Remove(d.socketPath)
+	os.Remove(d.rpcPath)
 	removePID(d.kgDir)
 	return nil
 }
@@ -139,6 +194,31 @@ func (d *Daemon) Stop() error {
 // Done returns a channel that is closed when the daemon is stopped.
 func (d *Daemon) Done() <-chan struct{} {
 	return d.done
+}
+
+func (d *Daemon) touch() {
+	d.lastActivity.Store(time.Now().Unix())
+}
+
+func (d *Daemon) idleLoop() {
+	defer d.wg.Done()
+	if d.idleTimeout <= 0 {
+		return // no idle timeout configured
+	}
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-d.done:
+			return
+		case <-ticker.C:
+			last := d.lastActivity.Load()
+			if last > 0 && time.Since(time.Unix(last, 0)) > d.idleTimeout {
+				go d.Stop()
+				return
+			}
+		}
+	}
 }
 
 func (d *Daemon) watchLoop() {
@@ -201,6 +281,23 @@ func (d *Daemon) acceptLoop() {
 	}
 }
 
+func (d *Daemon) rpcAcceptLoop() {
+	defer d.wg.Done()
+	for {
+		conn, err := d.rpcLn.Accept()
+		if err != nil {
+			select {
+			case <-d.done:
+				return
+			default:
+				continue
+			}
+		}
+		d.touch()
+		go d.rpcServer.ServeConn(conn)
+	}
+}
+
 func (d *Daemon) handleConn(conn net.Conn) {
 	buf := make([]byte, 256)
 	n, err := conn.Read(buf)
@@ -211,6 +308,7 @@ func (d *Daemon) handleConn(conn net.Conn) {
 	cmd := string(buf[:n])
 	switch cmd {
 	case "stop":
+		d.touch()
 		conn.Write([]byte("stopping"))
 		conn.Close()
 		go d.Stop()
@@ -218,6 +316,7 @@ func (d *Daemon) handleConn(conn net.Conn) {
 		conn.Write([]byte("running"))
 		conn.Close()
 	case "subscribe":
+		d.touch()
 		d.addSubscriber(conn)
 		// Connection stays open; will be cleaned up on write failure or Stop.
 	default:
@@ -263,10 +362,14 @@ func (d *Daemon) broadcast(events []watch.Event) {
 }
 
 func (d *Daemon) syncAndBroadcast() {
+	d.touch()
 	// Read current entities.
 	newEntities, err := store.ListEntities(d.kgDir)
 	if err != nil {
-		store.Sync(d.kgDir) //nolint:errcheck
+		// Sync index using the held-open index.
+		d.service.mu.Lock()
+		store.SyncWithIndex(d.kgDir, d.service.idx) //nolint:errcheck
+		d.service.mu.Unlock()
 		return
 	}
 
@@ -298,8 +401,10 @@ func (d *Daemon) syncAndBroadcast() {
 	// Update cache.
 	d.entityCache = newMap
 
-	// Sync index.
-	store.Sync(d.kgDir) //nolint:errcheck
+	// Sync index using the held-open index.
+	d.service.mu.Lock()
+	store.SyncWithIndex(d.kgDir, d.service.idx) //nolint:errcheck
+	d.service.mu.Unlock()
 
 	// Broadcast to subscribers.
 	if len(events) > 0 {
