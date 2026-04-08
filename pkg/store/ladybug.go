@@ -343,7 +343,6 @@ func (idx *ladybugIndex) FindEntities(typeName string, opts QueryOptions) ([]*En
 			ID:         id,
 			Type:       typeName,
 			Attributes: attrs,
-			Relations:  make(map[string][]string),
 		}
 
 		if !canPushPagination {
@@ -358,6 +357,7 @@ func (idx *ladybugIndex) FindEntities(typeName string, opts QueryOptions) ([]*En
 
 		// Fetch relations using the pre-prepared statement.
 		if relStmt != nil {
+			e.Relations = make(map[string][]string)
 			relResult, err := idx.conn.Execute(relStmt, map[string]any{"id": id})
 			if err == nil {
 				for relResult.HasNext() {
