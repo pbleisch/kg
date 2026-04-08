@@ -433,3 +433,86 @@ func (idx *ladybugIndex) FindReferrers(id string) ([]string, error) {
 func (idx *ladybugIndex) UpsertEntity(e *Entity) error {
 	return idx.AddEntity(e)
 }
+
+// IndexStats computes graph statistics via Cypher aggregation queries.
+func (idx *ladybugIndex) IndexStats() (*IndexStats, error) {
+	stats := &IndexStats{
+		TypeCounts: make(map[string]int),
+		RelCounts:  make(map[string]int),
+	}
+
+	// Count entities by type.
+	result, err := idx.conn.Query(
+		"MATCH (n:Entity) WHERE n.type <> '' RETURN n.type, count(*)")
+	if err != nil {
+		return nil, fmt.Errorf("count types: %w", err)
+	}
+	for result.HasNext() {
+		tuple, err := result.Next()
+		if err != nil {
+			result.Close()
+			return nil, err
+		}
+		typeName, _ := tuple.GetValue(0)
+		count, _ := tuple.GetValue(1)
+		tuple.Close()
+		name := fmt.Sprint(typeName)
+		c := toInt(count)
+		stats.TypeCounts[name] = c
+		stats.TotalEntities += c
+	}
+	result.Close()
+
+	// Count relations by name.
+	result, err = idx.conn.Query(
+		"MATCH ()-[r:HasRel]->() RETURN r.name, count(*)")
+	if err != nil {
+		return nil, fmt.Errorf("count rels: %w", err)
+	}
+	for result.HasNext() {
+		tuple, err := result.Next()
+		if err != nil {
+			result.Close()
+			return nil, err
+		}
+		relName, _ := tuple.GetValue(0)
+		count, _ := tuple.GetValue(1)
+		tuple.Close()
+		name := fmt.Sprint(relName)
+		c := toInt(count)
+		stats.RelCounts[name] = c
+		stats.TotalLinks += c
+	}
+	result.Close()
+
+	// Count orphans: entities with no outgoing or incoming relations.
+	result, err = idx.conn.Query(
+		"MATCH (n:Entity) WHERE n.type <> '' AND NOT EXISTS { MATCH (n)-[:HasRel]-() } RETURN count(*)")
+	if err != nil {
+		return nil, fmt.Errorf("count orphans: %w", err)
+	}
+	if result.HasNext() {
+		tuple, err := result.Next()
+		if err == nil {
+			val, _ := tuple.GetValue(0)
+			stats.Orphans = toInt(val)
+			tuple.Close()
+		}
+	}
+	result.Close()
+
+	return stats, nil
+}
+
+func toInt(v any) int {
+	switch n := v.(type) {
+	case int64:
+		return int(n)
+	case int:
+		return n
+	case float64:
+		return int(n)
+	default:
+		return 0
+	}
+}

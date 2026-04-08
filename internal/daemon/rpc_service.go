@@ -139,3 +139,18 @@ func (s *IndexService) Sync(_ *SyncArgs, reply *SyncReply) error {
 	reply.Result = result
 	return nil
 }
+
+func (s *IndexService) IndexStats(_ *Empty, reply *StatsReply) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sp, ok := s.idx.(store.StatsProvider)
+	if !ok {
+		return fmt.Errorf("index backend does not support stats")
+	}
+	stats, err := sp.IndexStats()
+	if err != nil {
+		return err
+	}
+	reply.Stats = stats
+	return nil
+}

@@ -161,3 +161,15 @@ func (r *remoteIndex) SimilarEntities(params SimilarityParams) ([]SimilarityResu
 	}
 	return reply.Results, nil
 }
+
+// ── StatsProvider ───────────────────────────────────────────────────────
+
+type rpcStatsReply struct{ Stats *IndexStats }
+
+func (r *remoteIndex) IndexStats() (*IndexStats, error) {
+	var reply rpcStatsReply
+	if err := r.call("IndexStats", &rpcEmpty{}, &reply); err != nil {
+		return nil, err
+	}
+	return reply.Stats, nil
+}

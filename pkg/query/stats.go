@@ -16,50 +16,68 @@ type GraphStats struct {
 	Orphans       int            `json:"orphans"`
 }
 
-// Stats computes graph-level metrics by scanning all entity YAML files.
+// Stats computes graph-level metrics. Uses the index when a StatsProvider
+// is available (bolt or ladybug), falling back to scanning YAML files.
 func Stats(kgDir string) (*GraphStats, error) {
+	if err := store.Sync(kgDir); err != nil {
+		return nil, fmt.Errorf("syncing index: %w", err)
+	}
+
+	idx, err := store.OpenIndex(kgDir)
+	if err != nil {
+		return nil, fmt.Errorf("opening index: %w", err)
+	}
+	defer idx.Close()
+
+	if sp, ok := idx.(store.StatsProvider); ok {
+		is, err := sp.IndexStats()
+		if err == nil {
+			return &GraphStats{
+				TotalEntities: is.TotalEntities,
+				TotalLinks:    is.TotalLinks,
+				TypeCounts:    is.TypeCounts,
+				RelCounts:     is.RelCounts,
+				Orphans:       is.Orphans,
+			}, nil
+		}
+		// Fall through to YAML scan on error.
+	}
+
+	// Fallback: scan YAML files.
 	entities, err := store.ListEntities(kgDir)
 	if err != nil {
 		return nil, fmt.Errorf("listing entities: %w", err)
 	}
+	return statsFromEntities(entities), nil
+}
 
+// statsFromEntities computes stats by iterating over loaded entities.
+func statsFromEntities(entities []*store.Entity) *GraphStats {
 	stats := &GraphStats{
 		TypeCounts: make(map[string]int),
 		RelCounts:  make(map[string]int),
 	}
-
-	// Set of all entity IDs that are referenced (incoming or outgoing).
 	linked := make(map[string]bool)
-
 	for _, e := range entities {
 		stats.TotalEntities++
 		stats.TypeCounts[e.Type]++
-
-		hasLinks := false
 		for rel, targets := range e.Relations {
 			stats.TotalLinks += len(targets)
 			stats.RelCounts[rel] += len(targets)
 			if len(targets) > 0 {
-				hasLinks = true
 				linked[e.ID] = true
 			}
 			for _, t := range targets {
 				linked[t] = true
 			}
 		}
-		if !hasLinks && !linked[e.ID] {
-			// Mark as potentially orphaned (will be rechecked below).
-		}
 	}
-
-	// Orphans: entities with no outgoing links AND no incoming links.
 	for _, e := range entities {
 		if !linked[e.ID] {
 			stats.Orphans++
 		}
 	}
-
-	return stats, nil
+	return stats
 }
 
 // TypeCountsSorted returns type counts sorted by count descending.

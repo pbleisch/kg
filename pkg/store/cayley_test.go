@@ -429,3 +429,51 @@ func TestBoltSimilarEntities(t *testing.T) {
 	// doc:c should not be in top 2 (orthogonal).
 	// other:x should not appear (different type).
 }
+
+func TestBoltIndexStats(t *testing.T) {
+idx := tempIndex(t)
+
+entities := []*Entity{
+{ID: "person:alice", Type: "person", Relations: map[string][]string{"works_at": {"company:acme"}}},
+{ID: "person:bob", Type: "person", Relations: map[string][]string{"works_at": {"company:acme"}, "knows": {"person:alice"}}},
+{ID: "company:acme", Type: "company"},
+{ID: "tool:vim", Type: "tool"}, // orphan
+}
+for _, e := range entities {
+if err := idx.AddEntity(e); err != nil {
+t.Fatalf("AddEntity(%s): %v", e.ID, err)
+}
+}
+
+sp, ok := idx.(StatsProvider)
+if !ok {
+t.Fatal("boltIndex should implement StatsProvider")
+}
+
+stats, err := sp.IndexStats()
+if err != nil {
+t.Fatalf("IndexStats: %v", err)
+}
+
+if stats.TotalEntities != 4 {
+t.Errorf("TotalEntities = %d, want 4", stats.TotalEntities)
+}
+if stats.TotalLinks != 3 {
+t.Errorf("TotalLinks = %d, want 3", stats.TotalLinks)
+}
+if stats.TypeCounts["person"] != 2 {
+t.Errorf("TypeCounts[person] = %d, want 2", stats.TypeCounts["person"])
+}
+if stats.TypeCounts["company"] != 1 {
+t.Errorf("TypeCounts[company] = %d, want 1", stats.TypeCounts["company"])
+}
+if stats.RelCounts["works_at"] != 2 {
+t.Errorf("RelCounts[works_at] = %d, want 2", stats.RelCounts["works_at"])
+}
+if stats.RelCounts["knows"] != 1 {
+t.Errorf("RelCounts[knows] = %d, want 1", stats.RelCounts["knows"])
+}
+if stats.Orphans != 1 {
+t.Errorf("Orphans = %d, want 1 (tool:vim)", stats.Orphans)
+}
+}

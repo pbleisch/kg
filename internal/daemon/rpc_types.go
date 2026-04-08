@@ -108,3 +108,9 @@ type SyncArgs struct {
 type SyncReply struct {
 	Result *store.SyncResult
 }
+
+// ── IndexStats ──────────────────────────────────────────────────────────
+
+type StatsReply struct {
+	Stats *store.IndexStats
+}
