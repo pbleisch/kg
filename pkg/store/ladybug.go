@@ -307,6 +307,16 @@ func (idx *ladybugIndex) FindEntities(typeName string, opts QueryOptions) ([]*En
 	}
 	defer qResult.Close()
 
+	// Prepare the relation query once, reuse for each entity.
+	relStmt, err := idx.conn.Prepare(
+		"MATCH (n:Entity {id: $id})-[r:HasRel]->(t:Entity) RETURN r.name, t.id",
+	)
+	if err != nil {
+		relStmt = nil // proceed without relations
+	} else {
+		defer relStmt.Close()
+	}
+
 	var results []*Entity
 	matched := 0
 	for qResult.HasNext() {
@@ -330,9 +340,9 @@ func (idx *ladybugIndex) FindEntities(typeName string, opts QueryOptions) ([]*En
 			ID:         id,
 			Type:       typeName,
 			Attributes: attrs,
+			Relations:  make(map[string][]string),
 		}
 
-		// Client-side filter + pagination when filters prevent Cypher push-down
 		if !canPushPagination {
 			if !MatchFilters(e, opts.Filters) {
 				continue
@@ -343,12 +353,8 @@ func (idx *ladybugIndex) FindEntities(typeName string, opts QueryOptions) ([]*En
 			}
 		}
 
-		// Fetch relations for this entity
-		e.Relations = make(map[string][]string)
-		relStmt, err := idx.conn.Prepare(
-			"MATCH (n:Entity {id: $id})-[r:HasRel]->(t:Entity) RETURN r.name, t.id",
-		)
-		if err == nil {
+		// Fetch relations using the pre-prepared statement.
+		if relStmt != nil {
 			relResult, err := idx.conn.Execute(relStmt, map[string]any{"id": id})
 			if err == nil {
 				for relResult.HasNext() {
@@ -359,11 +365,11 @@ func (idx *ladybugIndex) FindEntities(typeName string, opts QueryOptions) ([]*En
 					relName, _ := rt.GetValue(0)
 					targetID, _ := rt.GetValue(1)
 					rt.Close()
-					e.Relations[fmt.Sprint(relName)] = append(e.Relations[fmt.Sprint(relName)], fmt.Sprint(targetID))
+					name := fmt.Sprint(relName)
+					e.Relations[name] = append(e.Relations[name], fmt.Sprint(targetID))
 				}
 				relResult.Close()
 			}
-			relStmt.Close()
 		}
 
 		if !opts.IncludeEmbeddings {
