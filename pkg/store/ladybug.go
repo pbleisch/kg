@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 
 	lbug "github.com/LadybugDB/go-ladybug"
 )
@@ -20,6 +21,11 @@ func LadybugAvailable() bool { return true }
 type ladybugIndex struct {
 	db   *lbug.Database
 	conn *lbug.Connection
+
+	// HNSW vector index state.
+	vecExt  bool                   // true if vector extension loaded successfully
+	embDim  int                    // embedding dimension (0 = not yet detected)
+	embStmt *lbug.PreparedStatement // cached MERGE statement for EmbVec upserts
 }
 
 func openLadybug(kgDir string) (Indexer, error) {
@@ -57,10 +63,101 @@ func openLadybug(kgDir string) (Indexer, error) {
 		result.Close()
 	}
 
-	return &ladybugIndex{db: db, conn: conn}, nil
+	idx := &ladybugIndex{db: db, conn: conn}
+	idx.initVectorExtension()
+	return idx, nil
+}
+
+// initVectorExtension loads the vector extension and probes for an
+// existing EmbVec table (from a prior sync). Non-fatal on failure —
+// the index falls back to brute-force similarity search.
+func (idx *ladybugIndex) initVectorExtension() {
+	for _, q := range []string{"INSTALL vector", "LOAD EXTENSION vector"} {
+		r, err := idx.conn.Query(q)
+		if err != nil {
+			return // extension unavailable — brute-force fallback
+		}
+		r.Close()
+	}
+	idx.vecExt = true
+
+	// Probe for existing EmbVec table to recover embDim.
+	r, err := idx.conn.Query(
+		"MATCH (v:EmbVec) RETURN v.vec LIMIT 1",
+	)
+	if err != nil {
+		return // table doesn't exist yet — will be created lazily
+	}
+	defer r.Close()
+	if r.HasNext() {
+		tuple, err := r.Next()
+		if err == nil {
+			if vecVal, err := tuple.GetValue(0); err == nil {
+				if arr, ok := vecVal.([]any); ok {
+					idx.embDim = len(arr)
+				}
+			}
+			tuple.Close()
+		}
+	}
+}
+
+// ensureEmbVec creates the EmbVec sidecar table and HNSW index on first use.
+// The table stores embedding vectors extracted from entity attributes so
+// SimilarEntities can use approximate nearest-neighbor search instead of
+// brute-force scanning.
+func (idx *ladybugIndex) ensureEmbVec(dim int) error {
+	if idx.embDim > 0 {
+		return nil // already initialized
+	}
+	if !idx.vecExt {
+		return fmt.Errorf("vector extension not available")
+	}
+
+	// EmbVec primary key = "entityID:field" (e.g., "flow_state:description_embedding").
+	createQ := fmt.Sprintf(
+		"CREATE NODE TABLE IF NOT EXISTS EmbVec(id STRING, entity_id STRING, entity_type STRING, field STRING, vec FLOAT[%d], PRIMARY KEY(id))",
+		dim,
+	)
+	r, err := idx.conn.Query(createQ)
+	if err != nil {
+		return fmt.Errorf("create EmbVec table: %w", err)
+	}
+	r.Close()
+
+	// Create HNSW index for approximate nearest-neighbor queries.
+	r, err = idx.conn.Query(
+		"CALL CREATE_VECTOR_INDEX('EmbVec', 'emb_hnsw', 'vec', metric := 'cosine')",
+	)
+	if err != nil {
+		// Index might already exist from a previous run — that's fine.
+		if !strings.Contains(err.Error(), "already exists") {
+			return fmt.Errorf("create HNSW index: %w", err)
+		}
+	} else {
+		r.Close()
+	}
+
+	idx.embDim = dim
+
+	// Pre-prepare the CREATE statement for embedding inserts.
+	// HNSW-indexed columns cannot be updated via SET, so we use
+	// delete-then-create in upsertEmbeddings.
+	idx.embStmt, err = idx.conn.Prepare(
+		"CREATE (v:EmbVec {id: $id, entity_id: $eid, entity_type: $etype, field: $field, vec: $vec})",
+	)
+	if err != nil {
+		// Non-fatal: upsertEmbeddings will skip if embStmt is nil.
+		idx.embStmt = nil
+	}
+
+	return nil
 }
 
 func (idx *ladybugIndex) Close() error {
+	if idx.embStmt != nil {
+		idx.embStmt.Close()
+	}
 	idx.conn.Close()
 	idx.db.Close()
 	return nil
@@ -133,10 +230,101 @@ func (idx *ladybugIndex) AddEntity(e *Entity) error {
 		}
 	}
 
+	// Upsert embedding vectors into the HNSW-indexed sidecar table.
+	idx.upsertEmbeddings(e)
+
 	return nil
 }
 
-// RemoveEntity deletes outgoing edges and clears the node to a stub.
+// upsertEmbeddings extracts *_embedding fields from entity attributes and
+// writes them to the EmbVec sidecar table for HNSW-accelerated search.
+// Uses delete-then-create because HNSW-indexed columns cannot be updated
+// in-place (KuzuDB limitation). Best-effort: failures are silently ignored.
+func (idx *ladybugIndex) upsertEmbeddings(e *Entity) {
+	if !idx.vecExt {
+		return
+	}
+
+	// Collect embedding fields.
+	type embEntry struct {
+		field string
+		vec   []float64
+	}
+	var entries []embEntry
+	for k, v := range e.Attributes {
+		if !strings.HasSuffix(k, "_embedding") {
+			continue
+		}
+		vec, ok := ExtractVector(v)
+		if !ok || len(vec) == 0 {
+			continue
+		}
+		entries = append(entries, embEntry{field: k, vec: vec})
+	}
+	if len(entries) == 0 {
+		return
+	}
+
+	// Lazily create the EmbVec table on first embedding encounter.
+	if idx.embDim == 0 {
+		if err := idx.ensureEmbVec(len(entries[0].vec)); err != nil {
+			return
+		}
+	}
+
+	if idx.embStmt == nil {
+		return
+	}
+
+	// Delete existing embeddings for this entity before re-inserting.
+	idx.removeEmbeddings(e.ID)
+
+	for _, entry := range entries {
+		if len(entry.vec) != idx.embDim {
+			continue // dimension mismatch — skip
+		}
+		compositeID := e.ID + ":" + entry.field
+		// Convert []float64 to []any for the driver.
+		vecAny := make([]any, len(entry.vec))
+		for i, f := range entry.vec {
+			vecAny[i] = f
+		}
+		r, err := idx.conn.Execute(idx.embStmt, map[string]any{
+			"id":    compositeID,
+			"eid":   e.ID,
+			"etype": e.Type,
+			"field": entry.field,
+			"vec":   vecAny,
+		})
+		if err != nil {
+			continue
+		}
+		r.Close()
+	}
+}
+
+// removeEmbeddings deletes all EmbVec rows for the given entity ID.
+func (idx *ladybugIndex) removeEmbeddings(id string) {
+	if !idx.vecExt || idx.embDim == 0 {
+		return
+	}
+	// Delete by entity_id (may match multiple fields).
+	stmt, err := idx.conn.Prepare(
+		"MATCH (v:EmbVec) WHERE v.entity_id = $eid DELETE v",
+	)
+	if err != nil {
+		return
+	}
+	defer stmt.Close()
+	r, err := idx.conn.Execute(stmt, map[string]any{"eid": id})
+	if err != nil {
+		return
+	}
+	r.Close()
+}
+
+// RemoveEntity deletes outgoing edges, clears the node to a stub, and
+// removes any associated embedding vectors from the HNSW sidecar table.
 // Incoming edges from other entities are preserved (matching BoltDB behavior).
 func (idx *ladybugIndex) RemoveEntity(id string) error {
 	// Delete outgoing relationships.
@@ -168,6 +356,9 @@ func (idx *ladybugIndex) RemoveEntity(id string) error {
 		return fmt.Errorf("clear entity: %w", err)
 	}
 	result.Close()
+
+	// Remove embedding vectors from sidecar table (best-effort).
+	idx.removeEmbeddings(id)
 
 	return nil
 }
@@ -393,6 +584,118 @@ func (idx *ladybugIndex) FindEntities(typeName string, opts QueryOptions) ([]*En
 // computes similarity with the query vector, and returns the top-N results
 // sorted by score.
 func (idx *ladybugIndex) SimilarEntities(params SimilarityParams) ([]SimilarityResult, error) {
+	// Try HNSW-accelerated search first.
+	if idx.embDim > 0 && len(params.Vector) == idx.embDim {
+		if results, err := idx.similarHNSW(params); err == nil {
+			return results, nil
+		}
+		// Fall through to brute-force on HNSW failure.
+	}
+
+	return idx.similarBruteForce(params)
+}
+
+// similarHNSW uses the HNSW vector index for approximate nearest-neighbor
+// search. Over-queries by a factor to compensate for post-filtering by
+// entity_type and field, then refines with exact cosine similarity.
+func (idx *ladybugIndex) similarHNSW(params SimilarityParams) ([]SimilarityResult, error) {
+	// Over-query to account for type/field filtering.
+	k := params.TopN
+	if k <= 0 {
+		k = 100
+	}
+	fetchK := k * 20
+	if fetchK < 200 {
+		fetchK = 200
+	}
+
+	// Build the field filter set for post-filtering.
+	fieldSet := make(map[string]bool, len(params.Fields)*2)
+	for _, f := range params.Fields {
+		fieldSet[f] = true
+		fieldSet[f+"_embedding"] = true
+	}
+
+	vecAny := make([]any, len(params.Vector))
+	for i, f := range params.Vector {
+		vecAny[i] = f
+	}
+
+	// QUERY_VECTOR_INDEX returns (node, distance) where distance is
+	// cosine distance (1 - similarity) for metric='cosine'.
+	q := fmt.Sprintf(
+		"CALL QUERY_VECTOR_INDEX('EmbVec', 'emb_hnsw', $vec, %d) RETURN node.entity_id, node.entity_type, node.field, distance",
+		fetchK,
+	)
+	stmt, err := idx.conn.Prepare(q)
+	if err != nil {
+		return nil, fmt.Errorf("prepare HNSW query: %w", err)
+	}
+	defer stmt.Close()
+
+	result, err := idx.conn.Execute(stmt, map[string]any{"vec": vecAny})
+	if err != nil {
+		return nil, fmt.Errorf("HNSW query: %w", err)
+	}
+	defer result.Close()
+
+	var results []SimilarityResult
+	seen := make(map[string]bool)
+	for result.HasNext() {
+		tuple, err := result.Next()
+		if err != nil {
+			continue
+		}
+		eidVal, _ := tuple.GetValue(0)
+		etypeVal, _ := tuple.GetValue(1)
+		fieldVal, _ := tuple.GetValue(2)
+		distVal, _ := tuple.GetValue(3)
+		tuple.Close()
+
+		entityID := fmt.Sprint(eidVal)
+		entityType := fmt.Sprint(etypeVal)
+		field := fmt.Sprint(fieldVal)
+
+		// Post-filter by type and field.
+		if entityType != params.TypeName {
+			continue
+		}
+		if !fieldSet[field] {
+			continue
+		}
+		if seen[entityID] {
+			continue
+		}
+		seen[entityID] = true
+
+		dist, ok := distVal.(float64)
+		if !ok {
+			continue
+		}
+		score := 1.0 - dist // cosine distance → cosine similarity
+
+		// Build minimal entity.
+		e := &Entity{
+			ID:   entityID,
+			Type: entityType,
+		}
+
+		results = append(results, SimilarityResult{
+			Entity:     e,
+			Score:      score,
+			MatchField: field,
+		})
+	}
+
+	SortResults(results)
+	if params.TopN > 0 && len(results) > params.TopN {
+		results = results[:params.TopN]
+	}
+	return results, nil
+}
+
+// similarBruteForce is the original O(M) scan used when HNSW is unavailable.
+func (idx *ladybugIndex) similarBruteForce(params SimilarityParams) ([]SimilarityResult, error) {
 	// Bulk query: fetch id + attrs for all entities of the type in one call.
 	stmt, err := idx.conn.Prepare(
 		"MATCH (n:Entity) WHERE n.type = $type AND n.attrs <> '{}' RETURN n.id, n.attrs",
