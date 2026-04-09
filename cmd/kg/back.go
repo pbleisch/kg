@@ -39,9 +39,16 @@ entities, err := query.Back(cfg.kgDir, targetID, relation)
 if err != nil {
 return err
 }
+inclEmb, _ := cmd.Flags().GetBool("include-embeddings")
+if !inclEmb {
+for _, e := range entities {
+store.StripEmbeddings(e)
+}
+}
 f := output.NewFormatter(cfg.format)
 return f.FormatEntities(os.Stdout, entities)
 },
 }
+cmd.Flags().Bool("include-embeddings", false, "Include embedding vectors in output")
 rootCmd.AddCommand(cmd)
 }

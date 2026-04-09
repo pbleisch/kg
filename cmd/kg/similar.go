@@ -98,6 +98,10 @@ Examples:
 					attrs["_field"] = r.MatchField
 				}
 				e.Attributes = attrs
+				inclEmb, _ := cmd.Flags().GetBool("include-embeddings")
+				if !inclEmb {
+					store.StripEmbeddings(&e)
+				}
 				entities[i] = &e
 			}
 
@@ -112,6 +116,7 @@ Examples:
 	cmd.Flags().String("field", "", "Comma-separated attribute field name(s) to search")
 	cmd.Flags().String("metric", "cosine", "Similarity metric: cosine or dot")
 	cmd.Flags().Int("top", 10, "Number of results to return")
+	cmd.Flags().Bool("include-embeddings", false, "Include embedding vectors in output")
 
 	rootCmd.AddCommand(cmd)
 }
