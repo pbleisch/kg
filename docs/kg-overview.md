@@ -434,6 +434,39 @@ relations: 123
 duration: 45ms
 ```
 
+#### `kg stats`
+
+Show knowledge graph statistics (entity/relation counts by type).
+
+```bash
+$ kg stats
+```
+
+#### `kg similar <type:id> [--limit N]`
+
+Find entities similar to the given entity using vector embeddings.
+
+```bash
+$ kg similar person:alice --limit 5
+```
+
+#### `kg dedup <type>`
+
+Find potential duplicates within a type using embedding similarity.
+
+```bash
+$ kg dedup person
+```
+
+#### `kg embed [type]`
+
+Generate or regenerate embeddings for entities.
+
+```bash
+$ kg embed person     # embed all person entities
+$ kg embed            # embed all entities
+```
+
 #### `kg validate`
 
 Check YAML files against schemas.
@@ -464,6 +497,10 @@ kg get person:alice --human      # Human-readable formatted text
 | `--dir <path>` | Use knowledge graph at path (default: `.kg`) |
 | `--quiet` | Suppress non-essential output |
 | `--dry-run` | Show what would happen without making changes |
+| `--include-embeddings` | Include embedding vectors in output (stripped by default) |
+| `--include-relations` | Include relations in find results |
+| `--limit N` | Limit number of results |
+| `--offset N` | Skip first N results |
 
 ## Output Format: TOON
 
@@ -531,19 +568,26 @@ Exposes tools:
 - `kg_link` — create relation
 - `kg_unlink` — remove relation
 
-### 3. Daemon Mode (planned)
+### 3. Daemon Mode
 
-Background process that keeps the index hot in memory.
+Background index server that holds the index open and serves queries via `net/rpc`.
 
 ```bash
-$ kg daemon start
+$ kg daemon start    # start (foreground)
+$ kg daemon stop     # stop gracefully
+$ kg daemon status   # check if running
 ```
 
+**Auto-start:** The first `kg` command auto-forks a daemon in the background. Subsequent commands connect via RPC instead of opening the index directly. Set `KG_NO_DAEMON=1` to disable.
+
+**Auto-stop:** The daemon exits after 30 minutes of inactivity.
+
 Benefits:
-- Eliminates cold-start latency for CLI invocations
+- Eliminates index open/close overhead per command
+- No BoltDB lock contention between concurrent commands
 - Watches YAML files for changes, auto-syncs index
-- Unix socket for fast IPC
-- One daemon per knowledge graph
+- Two Unix sockets per graph: control (`daemon.sock`) + RPC (`daemon-rpc.sock`)
+- One daemon per knowledge graph, isolated by `.kg` directory
 
 ## Agent Skill Description
 

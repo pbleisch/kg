@@ -1,47 +1,76 @@
 # 0008 - Daemon (background index watcher)
 
-Status: Proposed
+Status: Accepted
 
 Date: 2026-02-01
+
+Updated: 2026-04
 
 Authors: Paul
 
 Context
 -------
-Daemon mode runs a background process per knowledge graph to keep the index hot and watch YAML files for changes. Decisions to record: IPC mechanism for client communication, file watch backend (fsnotify/inotify/fsevents), autostart behavior (system/user service vs none), resource limits, security & access control, and sync triggers.
+Opening the bolt/ladybug index on every CLI invocation adds latency. A background daemon can hold the index open, watch for YAML file changes, and serve queries over IPC — eliminating per-command open/close cost and keeping the index continuously fresh.
 
 Decision
 --------
-Status: Decided
 
-Decision:
-- IPC: gRPC over a Unix domain socket is the primary transport. gRPC provides a typed protobuf API, streaming, deadlines, and metadata that suits daemon<->CLI communication while running over UDS preserves OS-level socket permissions.
-- Watch strategy: Use Go's `fsnotify` to subscribe to native filesystem events (inotify, fsevents, etc.). Debounce rapid event bursts and apply exponential backoff on repeated failures.
-- Lifecycle: Default to one daemon per knowledge graph. Provide `kg daemon start|stop|status|logs` commands and document optional OS service integration (systemd/launchd) for autostart; CLI falls back to lazy-on-read sync if daemon is not running.
-- Activation & Discovery (detailed):
-  - Socket path: The daemon exposes a per-graph Unix domain socket at `.kg/.cache/daemon-<workspace-hash>.sock`. The `<workspace-hash>` is derived deterministically (e.g., SHA256) from the absolute path of the graph root to avoid collisions when the same repo is mounted at different locations.
-  - Token and metadata files: On startup the daemon writes `.kg/.cache/daemon.token` (random secret, file-perms 0600) and `.kg/.cache/daemon.meta.json` containing `workspace_id`, `pid`, `version`, and `manifest_checksum`.
-  - Client discovery flow (kg CLI or MCP adapter):
-    1. Check for socket presence at expected path. If missing, attempt to atomically create a lockfile `.kg/.cache/daemon.lock` using O_EXCL; if lock acquisition succeeds, spawn a detached daemon process bound to the graph and wait up to configurable timeout (e.g., 3s) for the socket to become ready.
-    2. If socket exists, attempt a gRPC handshake that includes the client's expected `workspace_id` and `token` (if present). The daemon responds with its metadata. If the workspace_id and token match, proceed to use the daemon.
-    3. If the handshake reveals a different `workspace_id` or missing/invalid token, treat the socket as stale/untrusted: attempt to check the PID in `daemon.meta.json` for liveness; if dead or unresponsive, attempt atomic takeover by removing socket and lockfile and spawning a new daemon as in (1). If takeover fails, fallback to lazy-on-read sync.
-    4. If handshake completes but manifest checksums differ (daemon index stale), the client may request a quick sync or trigger a `kg sync` operation; the daemon may be asked to perform an immediate sync or schedule one.
-  - Race/edge-case handling: Clients must re-validate the socket metadata after connect (race between takeover and a true daemon start). All operations that mutate the state should verify the daemon's `manifest_checksum` before proceeding and abort with actionable errors if a mismatch is observed.
-- Debugging / CLI shim: `kg` is the primary debugging shim. Expose `kg daemon status`, `kg daemon logs [--follow]`, `kg debug call <method> [--json|--human]`, and `kg debug socket` to inspect or invoke daemon RPCs interactively; protobuf↔JSON conversion is used for human-friendly views.
-- Security & auth: Use UDS with OS-level file permissions by default; document token-based auth and TLS for remote/advanced deployments. Aligns with decision 0013 for more details. The `.kg/.cache/daemon.token` is used as a shared secret for handshake to prevent accidental cross-workspace connections.
-- Sync interaction: Daemon auto-syncs the index on file events and updates `.kg/.cache/manifest.json` and the audit log; `kg sync` and `kg sync --rebuild` remain available for explicit control. Git operations remain user-managed.
+### IPC: net/rpc over Unix sockets
 
+Go stdlib `net/rpc` with gob encoding — zero external dependencies. Two sockets per kg directory:
+
+- **Control socket** (`daemon.sock`) — text protocol for `stop`, `status`, and `subscribe` (NDJSON event streaming).
+- **RPC socket** (`daemon-rpc.sock`) — `net/rpc` for index operations (`GetEntity`, `FindByType`, `FindByRelationTarget`, `FindReferrers`, `AddEntity`, `RemoveEntity`, `UpsertEntity`, `UpsertEntities`, `RemoveEntities`, `SimilarEntities`, `IndexStats`, `Sync`).
+
+Socket paths: `<kgDir>/.cache/daemon.sock` and `<kgDir>/.cache/daemon-rpc.sock`. When the absolute path is ≥100 bytes (Unix socket limit), a hashed fallback in `$TMPDIR` is used (e.g., `kg-daemon-<sha256[:16]>.sock`).
+
+### Index server model
+
+`OpenIndex(kgDir)` probes the daemon socket (100ms timeout). If a daemon is running, it returns a `remoteIndex` that proxies `Indexer`, `BatchIndexer`, `VectorSearcher`, and `StatsProvider` via RPC. If no daemon is available, it falls back to opening bolt/ladybug directly. `Sync()` is a no-op when the daemon is running since the daemon keeps the index fresh via file watcher.
+
+### RPC service
+
+`IndexService` wraps the real `store.Indexer` behind a `sync.RWMutex`. Read methods (`Get`, `Find*`, `Similar`, `Stats`) take an RLock for concurrent reads; write methods (`Add`, `Remove`, `Upsert*`, `Sync`) take an exclusive Lock.
+
+### Watch strategy
+
+`fsnotify` subscribes to native filesystem events on `.kg/entities/`. File change events are debounced (100ms) before re-indexing. The watch also powers the subscribe stream: events (`created`, `updated`, `deleted` with entity diffs) are pushed as NDJSON to connected control-socket subscribers. `kg watch --daemon` connects to this stream.
+
+### Lifecycle: `kg daemon start|stop|status`
+
+- **start**: runs the daemon in the foreground, writes PID file at `.kg/.cache/daemon.pid`, opens the index, listens on both sockets.
+- **stop**: sends `stop` to the control socket; daemon shuts down gracefully.
+- **status**: sends `status` to the control socket; prints `running` or `not running`.
+
+### Auto-start
+
+The first `kg` command that finds no daemon auto-forks one (`kg --dir <absPath> daemon start` as a detached process). Guard: only auto-starts from a real `kg` or `kg-ladybug` binary, not test binaries. Opt-out via `KG_NO_DAEMON` environment variable. Race-safe: only one daemon can bind the socket; losers fail silently.
+
+### Auto-stop (idle timeout)
+
+Default: 30 minutes of no activity. Activity = file changes, RPC calls, or control commands (except `status`). Checked every minute; graceful shutdown when idle. Disabled if `idleTimeout ≤ 0`.
+
+### Per-graph isolation
+
+Each `.kg` directory gets its own daemon, sockets, and PID file. Socket paths are derived from the kgDir so there are no collisions between repositories.
+
+### Security
+
+Unix socket file permissions provide OS-level access control. No token auth — this is a single-user local tool. The daemon is only accessible to the file owner.
 
 Alternatives Considered
 -----------------------
-- Per-graph daemon vs single shared daemon
-- Unix socket vs HTTP/TCP
-- Filesystem events vs polling
+- **gRPC / protobuf** — typed API and streaming, but adds a large dependency for a local single-user tool. `net/rpc` with gob is zero-dep and sufficient.
+- **Single shared daemon** vs per-graph daemon — per-graph is simpler (no multiplexing, no cross-graph auth) and matches the one-repo-one-index model.
+- **HTTP/TCP** — unnecessary for local IPC; Unix sockets give free file-permission security.
+- **Polling** vs filesystem events — `fsnotify` gives sub-second latency without CPU cost.
 
 Consequences
 ------------
-- A daemon improves CLI latency and enables auto-sync but increases operational complexity and security surface.
-- IPC choice affects portability, discovery, and ease of client implementation.
+- CLI latency drops significantly (no per-command index open).
+- Auto-start/stop means users don't manage daemons manually; `KG_NO_DAEMON` is the escape hatch.
+- Two sockets add modest complexity but cleanly separate streaming (control) from request/response (RPC).
+- Transparent fallback to direct index access means the daemon is never required.
 
 Related Decisions
 -----------------

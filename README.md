@@ -105,15 +105,15 @@ so the rpath resolves correctly. To build without installing: `mage ladybug:buil
 |---------|-------------|
 | `kg init` | Scaffold a new `.kg/` directory |
 | `kg create <type> <id> [attrs...]` | Create an entity |
-| `kg get <type:id>` | Get an entity by ID |
-| `kg find <type> [filters...]` | Find entities by type |
-| `kg similar <type> --field <f> --vector\|--like\|--vector-file` | Find similar entities by vector |
+| `kg get <type:id>` | Get an entity by ID (strips embeddings; `--include-embeddings` to keep) |
+| `kg find <type> [filters...]` | Find entities by type (`--limit`, `--offset`, `--include-embeddings`, `--include-relations`) |
+| `kg similar <type> --field <f> --vector\|--like\|--vector-file` | Find similar entities by vector (strips embeddings; `--include-embeddings` to keep) |
 | `kg set <type:id> key=value` | Set attributes |
 | `kg delete <type:id>` | Delete an entity |
 | `kg link <from> <rel> <to>` | Create a relation |
 | `kg unlink <from> <rel> <to>` | Remove a relation |
 | `kg path <id> -> <rel>` | Traverse forward relations |
-| `kg back <id>` | Find reverse references |
+| `kg back <id>` | Find reverse references (strips embeddings; `--include-embeddings` to keep) |
 | `kg types` | List schema types |
 | `kg describe <type>` | Show type schema |
 | `kg merge <source> <target>` | Merge two entities |
@@ -121,11 +121,19 @@ so the rpath resolves correctly. To build without installing: `mage ladybug:buil
 | `kg stats` | Graph metrics |
 | `kg validate` | Validate entities against schemas |
 | `kg sync` | Sync YAML to the index |
-| `kg daemon start\|stop\|status` | Background index watcher |
+| `kg daemon start\|stop\|status` | Background index server (auto-starts) |
 | `kg watch` | Stream entity/relation change events |
 | `kg morph` | Define and use reusable path patterns |
 | `kg mcp serve` | Start MCP server (stdio) |
 | `kg agent status\|schema\|skill\|examples\|mcp-config\|check` | Agent integration tools |
+
+Examples with new flags:
+
+```bash
+kg find person name~Ali --limit 10          # paginated results
+kg find person --include-relations          # include relations in output
+kg get person:alice --include-embeddings    # include embedding vectors
+```
 
 ## Output Formats
 
@@ -152,6 +160,23 @@ kg watch --daemon                    # subscribe to running kg daemon
 
 Events: `init`, `created`, `updated`, `deleted`, `linked`, `unlinked`.
 
+## Daemon Mode
+
+The daemon holds the index open and serves queries via RPC, eliminating
+lock contention and repeated index open/close overhead:
+
+```bash
+kg daemon start     # start manually (foreground)
+kg daemon stop      # stop the daemon
+kg daemon status    # check if running
+```
+
+**Auto-start:** The first `kg` command automatically forks a daemon in
+the background. Subsequent commands connect via RPC instead of opening
+the index directly. The daemon exits after 30 minutes of inactivity.
+
+**Opt-out:** Set `KG_NO_DAEMON=1` to disable auto-start.
+
 ## Storage Model
 
 - **Source of truth:** YAML files in `.kg/entities/<type>/<id>.yaml`
@@ -173,6 +198,10 @@ backend: auto  # auto (default), bolt, or ladybug
 - **auto** — Uses LadybugDB if compiled in, otherwise BoltDB
 - **bolt** — BoltDB (pure Go, always available)
 - **ladybug** — LadybugDB (requires the `kg-ladybug` binary)
+
+When the daemon is running, CLI commands connect to it via RPC instead
+of opening the index file directly. This eliminates lock contention and
+keeps the index hot in memory. See [Daemon Mode](#daemon-mode).
 
 ### Embeddings
 
