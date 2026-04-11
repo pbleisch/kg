@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 
 	"github.com/pbleisch/kg/pkg/command"
 	"github.com/pbleisch/kg/pkg/query"
+	"github.com/pbleisch/kg/pkg/schema"
 	"github.com/pbleisch/kg/pkg/store"
 )
 
@@ -224,6 +226,14 @@ func (s *Server) dispatch(name string, args json.RawMessage) (any, error) {
 		return s.toolLink(args)
 	case "kg_unlink":
 		return s.toolUnlink(args)
+	case "kg_types":
+		return s.toolTypes(args)
+	case "kg_describe":
+		return s.toolDescribe(args)
+	case "kg_stats":
+		return s.toolStats(args)
+	case "kg_validate":
+		return s.toolValidate(args)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -361,6 +371,122 @@ func (s *Server) toolUnlink(args json.RawMessage) (*linkResult, error) {
 		return nil, err
 	}
 	return &linkResult{OK: true}, nil
+}
+
+// Schema introspection tools.
+
+func (s *Server) toolTypes(args json.RawMessage) ([]string, error) {
+	schemas, err := schema.LoadAllSchemas(s.kgDir)
+	if err != nil {
+		return nil, fmt.Errorf("loading schemas: %w", err)
+	}
+	names := make([]string, 0, len(schemas))
+	for name := range schemas {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+type schemaResult struct {
+	Type        string       `json:"type"`
+	Description string       `json:"description"`
+	Attributes  []attrResult `json:"attributes"`
+	Relations   []relResult  `json:"relations"`
+}
+
+type attrResult struct {
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Required bool   `json:"required"`
+}
+
+type relResult struct {
+	Name        string `json:"name"`
+	Target      string `json:"target"`
+	Cardinality string `json:"cardinality"`
+}
+
+func (s *Server) toolDescribe(args json.RawMessage) (*schemaResult, error) {
+	var p struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %w", err)
+	}
+	sc, err := schema.LoadSchema(s.kgDir, p.Type)
+	if err != nil {
+		return nil, err
+	}
+
+	attrs := make([]attrResult, 0, len(sc.Attributes))
+	for name, a := range sc.Attributes {
+		attrs = append(attrs, attrResult{Name: name, Type: a.Type, Required: a.Required})
+	}
+	sort.Slice(attrs, func(i, j int) bool { return attrs[i].Name < attrs[j].Name })
+
+	rels := make([]relResult, 0, len(sc.Relations))
+	for name, r := range sc.Relations {
+		rels = append(rels, relResult{Name: name, Target: r.Target, Cardinality: r.Cardinality})
+	}
+	sort.Slice(rels, func(i, j int) bool { return rels[i].Name < rels[j].Name })
+
+	return &schemaResult{
+		Type:        sc.Type,
+		Description: sc.Description,
+		Attributes:  attrs,
+		Relations:   rels,
+	}, nil
+}
+
+func (s *Server) toolStats(args json.RawMessage) (*query.GraphStats, error) {
+	return query.Stats(s.kgDir)
+}
+
+type validateResult struct {
+	Valid         bool          `json:"valid"`
+	TotalEntities int          `json:"total_entities"`
+	ErrorCount    int          `json:"error_count"`
+	Errors        []validateErr `json:"errors"`
+}
+
+type validateErr struct {
+	EntityID string `json:"entity_id"`
+	Field    string `json:"field"`
+	Message  string `json:"message"`
+}
+
+func (s *Server) toolValidate(args json.RawMessage) (*validateResult, error) {
+	schemas, err := schema.LoadAllSchemas(s.kgDir)
+	if err != nil {
+		return nil, fmt.Errorf("loading schemas: %w", err)
+	}
+	entities, err := store.ListEntities(s.kgDir)
+	if err != nil {
+		return nil, fmt.Errorf("listing entities: %w", err)
+	}
+
+	var errs []validateErr
+	for _, e := range entities {
+		sc, ok := schemas[e.Type]
+		if !ok {
+			continue
+		}
+		for _, ve := range schema.ValidateEntity(sc, e) {
+			errs = append(errs, validateErr{
+				EntityID: e.ID,
+				Field:    ve.Field,
+				Message:  ve.Message,
+			})
+		}
+	}
+
+	return &validateResult{
+		Valid:         len(errs) == 0,
+		TotalEntities: len(entities),
+		ErrorCount:    len(errs),
+		Errors:        errs,
+	}, nil
 }
 
 // writeResponse marshals and writes a JSON-RPC response followed by a newline.
@@ -501,6 +627,41 @@ func buildToolDefs() []toolDef {
 					"target_id": {Type: "string", Description: "Target entity ID"},
 				},
 				Required: []string{"source_id", "relation", "target_id"},
+			},
+		},
+		{
+			Name:        "kg_types",
+			Description: "List all available entity types in the knowledge graph schema",
+			InputSchema: jsonSchema{
+				Type:       "object",
+				Properties: map[string]schemaProp{},
+			},
+		},
+		{
+			Name:        "kg_describe",
+			Description: "Describe a schema type showing its attributes, relations, and constraints",
+			InputSchema: jsonSchema{
+				Type: "object",
+				Properties: map[string]schemaProp{
+					"type": {Type: "string", Description: "Schema type name (e.g. \"Concept\", \"Game\", \"Person\")"},
+				},
+				Required: []string{"type"},
+			},
+		},
+		{
+			Name:        "kg_stats",
+			Description: "Get graph statistics: entity counts, link counts, type breakdown, and orphan count",
+			InputSchema: jsonSchema{
+				Type:       "object",
+				Properties: map[string]schemaProp{},
+			},
+		},
+		{
+			Name:        "kg_validate",
+			Description: "Validate all entities against their schemas, returning any constraint violations",
+			InputSchema: jsonSchema{
+				Type:       "object",
+				Properties: map[string]schemaProp{},
 			},
 		},
 	}

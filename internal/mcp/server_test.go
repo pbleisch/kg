@@ -36,14 +36,14 @@ func TestToolsList(t *testing.T) {
 	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if len(resp.Result.Tools) != 9 {
-		t.Fatalf("expected 9 tools, got %d", len(resp.Result.Tools))
+	if len(resp.Result.Tools) != 13 {
+		t.Fatalf("expected 13 tools, got %d", len(resp.Result.Tools))
 	}
 	names := make(map[string]bool)
 	for _, tool := range resp.Result.Tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"kg_get", "kg_find", "kg_back", "kg_path", "kg_create", "kg_set", "kg_delete", "kg_link", "kg_unlink"} {
+	for _, want := range []string{"kg_get", "kg_find", "kg_back", "kg_path", "kg_create", "kg_set", "kg_delete", "kg_link", "kg_unlink", "kg_types", "kg_describe", "kg_stats", "kg_validate"} {
 		if !names[want] {
 			t.Errorf("missing tool: %s", want)
 		}

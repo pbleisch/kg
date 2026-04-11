@@ -89,7 +89,39 @@ attributes:
 `,
 	}
 
+	schemas := map[string]string{
+		"schema/person.yaml": `type: Person
+description: A person entity
+attributes:
+  name:
+    type: string
+    required: true
+  role:
+    type: string
+relations: {}
+`,
+		"schema/project.yaml": `type: Project
+description: A project entity
+attributes:
+  name:
+    type: string
+    required: true
+  status:
+    type: string
+relations: {}
+`,
+	}
+
 	for relPath, content := range entities {
+		fullPath := filepath.Join(dir, relPath)
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(fullPath, []byte(content), 0o644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+	}
+	for relPath, content := range schemas {
 		fullPath := filepath.Join(dir, relPath)
 		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 			t.Fatalf("mkdir: %v", err)
@@ -164,6 +196,8 @@ func TestIntegrationToolsList(t *testing.T) {
 		"kg_get": false, "kg_find": false, "kg_back": false,
 		"kg_path": false, "kg_create": false, "kg_set": false,
 		"kg_delete": false, "kg_link": false, "kg_unlink": false,
+		"kg_types": false, "kg_describe": false, "kg_stats": false,
+		"kg_validate": false,
 	}
 	for _, tool := range result.Tools {
 		if _, ok := expected[tool.Name]; ok {
@@ -387,6 +421,123 @@ func TestIntegrationMultipleRequests(t *testing.T) {
 	}
 	if entity.ID != "project:atlas" {
 		t.Fatalf("expected 'project:atlas', got %q", entity.ID)
+	}
+
+	w.Close()
+	<-done
+}
+
+func TestIntegrationKgTypes(t *testing.T) {
+	kgDir := setupKGDir(t)
+	w, r, done := startServer(t, kgDir)
+	defer w.Close()
+
+	resp := sendRPC(t, w, r, 1, "tools/call", map[string]any{
+		"name":      "kg_types",
+		"arguments": map[string]any{},
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %s", resp.Error.Message)
+	}
+
+	text, isErr := toolCallResultText(t, resp)
+	if isErr {
+		t.Fatalf("tool returned error: %s", text)
+	}
+
+	var types []string
+	if err := json.Unmarshal([]byte(text), &types); err != nil {
+		t.Fatalf("unmarshal types: %v", err)
+	}
+	if len(types) != 2 {
+		t.Fatalf("expected 2 types, got %d: %v", len(types), types)
+	}
+	if types[0] != "Person" || types[1] != "Project" {
+		t.Fatalf("expected [Person, Project], got %v", types)
+	}
+
+	w.Close()
+	<-done
+}
+
+func TestIntegrationKgDescribe(t *testing.T) {
+	kgDir := setupKGDir(t)
+	w, r, done := startServer(t, kgDir)
+	defer w.Close()
+
+	resp := sendRPC(t, w, r, 1, "tools/call", map[string]any{
+		"name":      "kg_describe",
+		"arguments": map[string]any{"type": "Person"},
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %s", resp.Error.Message)
+	}
+
+	text, isErr := toolCallResultText(t, resp)
+	if isErr {
+		t.Fatalf("tool returned error: %s", text)
+	}
+
+	var result struct {
+		Type        string `json:"type"`
+		Description string `json:"description"`
+		Attributes  []struct {
+			Name     string `json:"name"`
+			Type     string `json:"type"`
+			Required bool   `json:"required"`
+		} `json:"attributes"`
+	}
+	if err := json.Unmarshal([]byte(text), &result); err != nil {
+		t.Fatalf("unmarshal schema: %v", err)
+	}
+	if result.Type != "Person" {
+		t.Fatalf("expected type 'Person', got %q", result.Type)
+	}
+	if len(result.Attributes) != 2 {
+		t.Fatalf("expected 2 attributes, got %d", len(result.Attributes))
+	}
+	if result.Attributes[0].Name != "name" || !result.Attributes[0].Required {
+		t.Fatalf("expected first attr 'name' (required), got %+v", result.Attributes[0])
+	}
+
+	w.Close()
+	<-done
+}
+
+func TestIntegrationKgValidate(t *testing.T) {
+	kgDir := setupKGDir(t)
+	w, r, done := startServer(t, kgDir)
+	defer w.Close()
+
+	resp := sendRPC(t, w, r, 1, "tools/call", map[string]any{
+		"name":      "kg_validate",
+		"arguments": map[string]any{},
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %s", resp.Error.Message)
+	}
+
+	text, isErr := toolCallResultText(t, resp)
+	if isErr {
+		t.Fatalf("tool returned error: %s", text)
+	}
+
+	var result struct {
+		Valid         bool `json:"valid"`
+		TotalEntities int  `json:"total_entities"`
+		ErrorCount    int  `json:"error_count"`
+	}
+	if err := json.Unmarshal([]byte(text), &result); err != nil {
+		t.Fatalf("unmarshal validate result: %v", err)
+	}
+	if !result.Valid {
+		t.Fatalf("expected valid=true, got false")
+	}
+	if result.TotalEntities != 3 {
+		t.Fatalf("expected 3 entities, got %d", result.TotalEntities)
+	}
+	if result.ErrorCount != 0 {
+		t.Fatalf("expected 0 errors, got %d", result.ErrorCount)
 	}
 
 	w.Close()
