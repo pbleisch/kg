@@ -1,18 +1,22 @@
 # 0020 - Using "beads" for work tracking
 
-Status: Decided
+Status: Obsolete
 
 Date: 2026-02-01
+
+Updated: 2026-04
 
 Authors: Paul
 
 Context
 -------
-Steve Yegge's "beads" concept is a lightweight personal work-tracking method that represents tasks as small, focused items recorded in a list. For this repository, beads will be used to track work that AI agents need to know about.
+Steve Yegge's "beads" concept is a lightweight personal work-tracking method that represents tasks as small, focused items recorded in a list. For this repository, beads was used to track work that AI agents need to know about.
 
 Decision
 --------
-Adopt beads for local, in-repo work tracking. Follow normal beads conventions.
+~~Adopt beads for local, in-repo work tracking. Follow normal beads conventions.~~
+
+**Obsolete.** Removed in favor of GitHub Issues and native agentic tool capabilities. Advances in AI coding agents have made dedicated in-repo issue trackers unnecessary — agents can use GitHub Issues directly and manage session-level tasks in memory.
 
 Rationale
 ---------
@@ -22,5 +26,5 @@ Rationale
 
 Consequences
 ------------
-- Encourages small, incremental tasks recorded next to the code.
-
+- `.beads/` directory, desire skill, and next skill removed.
+- AGENTS.md simplified to remove beads workflow.

@@ -59,7 +59,7 @@ in the fewest words possible.
 - Separated from subject by a blank line (use a second `-m`)
 - Explain **why**, not what (the diff shows what)
 - Wrap at 72 characters
-- Reference bead IDs if applicable: `Closes kg-abc`
+- Reference issue numbers if applicable: `Closes #123`
 
 ### Examples
 

@@ -12,7 +12,7 @@ External tools that need to react to knowledge graph changes have no
 clean integration point. They must poll `kg find` and diff, implement
 their own filesystem watcher on `.kg/entities/`, or dig into daemon
 internals. All three approaches are fragile and duplicate change
-detection that kg should own. See desire 0002.
+detection that kg should own.
 
 Decision
 --------
