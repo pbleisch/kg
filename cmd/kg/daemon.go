@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -30,6 +31,10 @@ func init() {
 				d, err := daemon.Start(cfg.kgDir, opts...)
 				if err != nil {
 					return err
+				}
+
+				if logPath := d.LogPath(); logPath != "" && !cfg.quiet {
+					fmt.Fprintf(os.Stderr, "daemon started (pid %d), logging to %s\n", os.Getpid(), logPath)
 				}
 
 				sig := make(chan os.Signal, 1)
@@ -90,6 +95,38 @@ func init() {
 			},
 		},
 	)
+
+	logsCmd := &cobra.Command{
+		Use:   "logs",
+		Short: "Show daemon log output",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			absDir, err := filepath.Abs(cfg.kgDir)
+			if err != nil {
+				return err
+			}
+			logPath, err := daemon.LogFilePath(absDir)
+			if err != nil {
+				return fmt.Errorf("no daemon log found (is daemon running?)")
+			}
+
+			follow, _ := cmd.Flags().GetBool("follow")
+			if follow {
+				tailCmd := exec.Command("tail", "-f", logPath)
+				tailCmd.Stdout = os.Stdout
+				tailCmd.Stderr = os.Stderr
+				return tailCmd.Run()
+			}
+
+			data, err := os.ReadFile(logPath)
+			if err != nil {
+				return err
+			}
+			os.Stdout.Write(data)
+			return nil
+		},
+	}
+	logsCmd.Flags().BoolP("follow", "f", false, "Follow log output")
+	daemonCmd.AddCommand(logsCmd)
 
 	rootCmd.AddCommand(daemonCmd)
 }

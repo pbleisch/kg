@@ -552,7 +552,7 @@ func TestEmbed_CommandFailure(t *testing.T) {
 
 func TestSyncEmbed_NoConfig(t *testing.T) {
 	dir := t.TempDir()
-	got := syncEmbed(dir, false)
+	got, _ := syncEmbed(dir, false)
 	if got != 0 {
 		t.Errorf("expected 0 embedded without config, got %d", got)
 	}
@@ -567,7 +567,7 @@ func TestSyncEmbed_WithEntities(t *testing.T) {
 	}
 	dir := setupEmbedDir(t, entities, cmd, []string{"name"}, false)
 
-	got := syncEmbed(dir, false)
+	got, _ := syncEmbed(dir, false)
 	if got != 1 {
 		t.Errorf("expected 1 embedded, got %d", got)
 	}
@@ -581,7 +581,7 @@ func TestSyncEmbed_ReturnsZeroOnFailure(t *testing.T) {
 	os.MkdirAll(filepath.Join(dir, "entities", "person"), 0o755)
 	WriteEntity(dir, &Entity{ID: "person:alice", Type: "person", Attributes: map[string]any{"name": "Alice"}})
 
-	got := syncEmbed(dir, false)
+	got, _ := syncEmbed(dir, false)
 	if got != 0 {
 		t.Errorf("expected 0 on command failure, got %d", got)
 	}

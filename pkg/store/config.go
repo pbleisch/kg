@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,7 +80,12 @@ func OpenIndex(kgDir string) (Indexer, error) {
 		absDir, _ := filepath.Abs(kgDir)
 		sockPath := rpcSocketPath(absDir)
 		if DaemonAvailable(sockPath) {
-			return DialRemote(sockPath)
+			remote, err := DialRemote(sockPath)
+			if err == nil {
+				return remote, nil
+			}
+			// Daemon appeared available but dial failed — fall back to direct.
+			log.Printf("WARNING: daemon available but dial failed: %v; falling back to direct index", err)
 		}
 		// No daemon running — try to start one in the background.
 		// This command uses direct open; the NEXT command will use RPC.

@@ -125,3 +125,11 @@ type SyncReply struct {
 type StatsReply struct {
 	Stats *store.IndexStats
 }
+
+// ── Ping (health check) ────────────────────────────────────────────────
+
+type PingArgs struct{}
+
+type PingReply struct {
+	OK bool
+}

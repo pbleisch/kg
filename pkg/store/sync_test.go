@@ -206,6 +206,59 @@ func TestSyncDeleted(t *testing.T) {
 	}
 }
 
+func TestSaveManifestAtomic(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".cache"), 0o755)
+
+	m := &Manifest{
+		Version: 1,
+		Files: map[string]FileEntry{
+			"entities/flow/test.yaml": {Checksum: "abc123"},
+		},
+	}
+
+	if err := SaveManifest(dir, m); err != nil {
+		t.Fatalf("SaveManifest: %v", err)
+	}
+
+	loaded, err := LoadManifest(dir)
+	if err != nil {
+		t.Fatalf("LoadManifest: %v", err)
+	}
+	if loaded.Files["entities/flow/test.yaml"].Checksum != "abc123" {
+		t.Error("manifest content mismatch after round-trip")
+	}
+
+	// No .tmp file should remain after a successful write.
+	tmp := manifestPath(dir) + ".tmp"
+	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+		t.Error("temp file should not exist after successful save")
+	}
+}
+
+func TestLoadManifestCleansStaleTemp(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".cache"), 0o755)
+
+	// Simulate a crash that left a .tmp file.
+	tmp := manifestPath(dir) + ".tmp"
+	if err := os.WriteFile(tmp, []byte("partial"), 0o644); err != nil {
+		t.Fatalf("writing stale tmp: %v", err)
+	}
+
+	m, err := LoadManifest(dir)
+	if err != nil {
+		t.Fatalf("LoadManifest: %v", err)
+	}
+	if m == nil {
+		t.Fatal("expected non-nil manifest")
+	}
+
+	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+		t.Error("stale temp file should be cleaned up by LoadManifest")
+	}
+}
+
 func TestRebuild(t *testing.T) {
 	entities := []*Entity{
 		{ID: "person:alice", Type: "Person", Attributes: map[string]any{"name": "Alice"}},

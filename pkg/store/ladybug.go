@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -106,6 +107,8 @@ func (idx *ladybugIndex) initVectorExtension() {
 // The table stores embedding vectors extracted from entity attributes so
 // SimilarEntities can use approximate nearest-neighbor search instead of
 // brute-force scanning.
+// State (embDim, embStmt) is only set after ALL steps succeed to avoid
+// leaving the index in an inconsistent state on partial failure.
 func (idx *ladybugIndex) ensureEmbVec(dim int) error {
 	if idx.embDim > 0 {
 		return nil // already initialized
@@ -138,19 +141,19 @@ func (idx *ladybugIndex) ensureEmbVec(dim int) error {
 		r.Close()
 	}
 
-	idx.embDim = dim
-
 	// Pre-prepare the CREATE statement for embedding inserts.
 	// HNSW-indexed columns cannot be updated via SET, so we use
 	// delete-then-create in upsertEmbeddings.
-	idx.embStmt, err = idx.conn.Prepare(
+	stmt, err := idx.conn.Prepare(
 		"CREATE (v:EmbVec {id: $id, entity_id: $eid, entity_type: $etype, field: $field, vec: $vec})",
 	)
 	if err != nil {
-		// Non-fatal: upsertEmbeddings will skip if embStmt is nil.
-		idx.embStmt = nil
+		return fmt.Errorf("prepare EmbVec insert: %w", err)
 	}
 
+	// Only set state after everything succeeded.
+	idx.embDim = dim
+	idx.embStmt = stmt
 	return nil
 }
 
@@ -231,7 +234,9 @@ func (idx *ladybugIndex) AddEntity(e *Entity) error {
 	}
 
 	// Upsert embedding vectors into the HNSW-indexed sidecar table.
-	idx.upsertEmbeddings(e)
+	if err := idx.upsertEmbeddings(e); err != nil {
+		return fmt.Errorf("upsert embeddings: %w", err)
+	}
 
 	return nil
 }
@@ -239,10 +244,10 @@ func (idx *ladybugIndex) AddEntity(e *Entity) error {
 // upsertEmbeddings extracts *_embedding fields from entity attributes and
 // writes them to the EmbVec sidecar table for HNSW-accelerated search.
 // Uses delete-then-create because HNSW-indexed columns cannot be updated
-// in-place (KuzuDB limitation). Best-effort: failures are silently ignored.
-func (idx *ladybugIndex) upsertEmbeddings(e *Entity) {
+// in-place (KuzuDB limitation).
+func (idx *ladybugIndex) upsertEmbeddings(e *Entity) error {
 	if !idx.vecExt {
-		return
+		return nil
 	}
 
 	// Collect embedding fields.
@@ -262,26 +267,30 @@ func (idx *ladybugIndex) upsertEmbeddings(e *Entity) {
 		entries = append(entries, embEntry{field: k, vec: vec})
 	}
 	if len(entries) == 0 {
-		return
+		return nil
 	}
 
 	// Lazily create the EmbVec table on first embedding encounter.
 	if idx.embDim == 0 {
 		if err := idx.ensureEmbVec(len(entries[0].vec)); err != nil {
-			return
+			return fmt.Errorf("ensure EmbVec: %w", err)
 		}
 	}
 
 	if idx.embStmt == nil {
-		return
+		return fmt.Errorf("embedding statement not prepared")
 	}
 
 	// Delete existing embeddings for this entity before re-inserting.
-	idx.removeEmbeddings(e.ID)
+	if err := idx.removeEmbeddings(e.ID); err != nil {
+		return fmt.Errorf("remove embeddings for %s: %w", e.ID, err)
+	}
 
+	var dimErrors []string
 	for _, entry := range entries {
 		if len(entry.vec) != idx.embDim {
-			continue // dimension mismatch — skip
+			dimErrors = append(dimErrors, fmt.Sprintf("field %s: got %d dims, want %d", entry.field, len(entry.vec), idx.embDim))
+			continue
 		}
 		compositeID := e.ID + ":" + entry.field
 		// Convert []float64 to []any for the driver.
@@ -297,30 +306,35 @@ func (idx *ladybugIndex) upsertEmbeddings(e *Entity) {
 			"vec":   vecAny,
 		})
 		if err != nil {
-			continue
+			return fmt.Errorf("insert embedding %s: %w", compositeID, err)
 		}
 		r.Close()
 	}
+	if len(dimErrors) > 0 {
+		return fmt.Errorf("dimension mismatch: %s", strings.Join(dimErrors, "; "))
+	}
+	return nil
 }
 
 // removeEmbeddings deletes all EmbVec rows for the given entity ID.
-func (idx *ladybugIndex) removeEmbeddings(id string) {
+func (idx *ladybugIndex) removeEmbeddings(id string) error {
 	if !idx.vecExt || idx.embDim == 0 {
-		return
+		return nil
 	}
 	// Delete by entity_id (may match multiple fields).
 	stmt, err := idx.conn.Prepare(
 		"MATCH (v:EmbVec) WHERE v.entity_id = $eid DELETE v",
 	)
 	if err != nil {
-		return
+		return fmt.Errorf("prepare remove embeddings: %w", err)
 	}
 	defer stmt.Close()
 	r, err := idx.conn.Execute(stmt, map[string]any{"eid": id})
 	if err != nil {
-		return
+		return fmt.Errorf("execute remove embeddings: %w", err)
 	}
 	r.Close()
+	return nil
 }
 
 // RemoveEntity deletes outgoing edges, clears the node to a stub, and
@@ -357,8 +371,10 @@ func (idx *ladybugIndex) RemoveEntity(id string) error {
 	}
 	result.Close()
 
-	// Remove embedding vectors from sidecar table (best-effort).
-	idx.removeEmbeddings(id)
+	// Remove embedding vectors from sidecar table.
+	if err := idx.removeEmbeddings(id); err != nil {
+		return fmt.Errorf("remove embeddings: %w", err)
+	}
 
 	return nil
 }
@@ -870,9 +886,23 @@ func (idx *ladybugIndex) UpsertEntities(entities []*Entity) error {
 	return nil
 }
 
+// rollback issues a ROLLBACK and logs any failure. The connection may be in
+// an unknown state if rollback fails, so we log a warning for diagnostics.
+func (idx *ladybugIndex) rollback() {
+	if r, rbErr := idx.conn.Query("ROLLBACK"); rbErr != nil {
+		log.Printf("WARNING: rollback failed: %v", rbErr)
+	} else if r != nil {
+		r.Close()
+	}
+}
+
 func (idx *ladybugIndex) upsertChunk(entities []*Entity) error {
-	if _, err := idx.conn.Query("BEGIN TRANSACTION"); err != nil {
+	r, err := idx.conn.Query("BEGIN TRANSACTION")
+	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
+	}
+	if r != nil {
+		r.Close()
 	}
 
 	// Prepare statements once for the whole chunk.
@@ -880,7 +910,7 @@ func (idx *ladybugIndex) upsertChunk(entities []*Entity) error {
 		"MERGE (n:Entity {id: $id}) SET n.type = $type, n.attrs = $attrs",
 	)
 	if err != nil {
-		idx.conn.Query("ROLLBACK") //nolint:errcheck
+		idx.rollback()
 		return fmt.Errorf("prepare merge: %w", err)
 	}
 	defer mergeStmt.Close()
@@ -889,7 +919,7 @@ func (idx *ladybugIndex) upsertChunk(entities []*Entity) error {
 		"MATCH (n:Entity {id: $id})-[r:HasRel]->() DELETE r",
 	)
 	if err != nil {
-		idx.conn.Query("ROLLBACK") //nolint:errcheck
+		idx.rollback()
 		return fmt.Errorf("prepare delete rels: %w", err)
 	}
 	defer delRelStmt.Close()
@@ -900,7 +930,7 @@ func (idx *ladybugIndex) upsertChunk(entities []*Entity) error {
 			"CREATE (a)-[:HasRel {name: $name}]->(b)",
 	)
 	if err != nil {
-		idx.conn.Query("ROLLBACK") //nolint:errcheck
+		idx.rollback()
 		return fmt.Errorf("prepare create rel: %w", err)
 	}
 	defer createRelStmt.Close()
@@ -908,7 +938,7 @@ func (idx *ladybugIndex) upsertChunk(entities []*Entity) error {
 	for _, e := range entities {
 		attrsJSON, err := json.Marshal(e.Attributes)
 		if err != nil {
-			idx.conn.Query("ROLLBACK") //nolint:errcheck
+			idx.rollback()
 			return fmt.Errorf("marshal attrs for %s: %w", e.ID, err)
 		}
 
@@ -918,14 +948,14 @@ func (idx *ladybugIndex) upsertChunk(entities []*Entity) error {
 			"attrs": string(attrsJSON),
 		})
 		if err != nil {
-			idx.conn.Query("ROLLBACK") //nolint:errcheck
+			idx.rollback()
 			return fmt.Errorf("merge entity %s: %w", e.ID, err)
 		}
 		result.Close()
 
 		result, err = idx.conn.Execute(delRelStmt, map[string]any{"id": e.ID})
 		if err != nil {
-			idx.conn.Query("ROLLBACK") //nolint:errcheck
+			idx.rollback()
 			return fmt.Errorf("delete rels for %s: %w", e.ID, err)
 		}
 		result.Close()
@@ -938,7 +968,7 @@ func (idx *ladybugIndex) upsertChunk(entities []*Entity) error {
 					"name": rel,
 				})
 				if err != nil {
-					idx.conn.Query("ROLLBACK") //nolint:errcheck
+					idx.rollback()
 					return fmt.Errorf("create rel %s->%s for %s: %w", rel, t, e.ID, err)
 				}
 				result.Close()
@@ -950,9 +980,13 @@ func (idx *ladybugIndex) upsertChunk(entities []*Entity) error {
 		// syncEmbed() after the entity sync completes.
 	}
 
-	if _, err := idx.conn.Query("COMMIT"); err != nil {
-		idx.conn.Query("ROLLBACK") //nolint:errcheck
+	r, err = idx.conn.Query("COMMIT")
+	if err != nil {
+		idx.rollback()
 		return fmt.Errorf("commit transaction: %w", err)
+	}
+	if r != nil {
+		r.Close()
 	}
 	return nil
 }
@@ -973,15 +1007,19 @@ func (idx *ladybugIndex) RemoveEntities(ids []string) error {
 }
 
 func (idx *ladybugIndex) removeChunk(ids []string) error {
-	if _, err := idx.conn.Query("BEGIN TRANSACTION"); err != nil {
+	r, err := idx.conn.Query("BEGIN TRANSACTION")
+	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
+	}
+	if r != nil {
+		r.Close()
 	}
 
 	delRelStmt, err := idx.conn.Prepare(
 		"MATCH (n:Entity {id: $id})-[r:HasRel]->() DELETE r",
 	)
 	if err != nil {
-		idx.conn.Query("ROLLBACK") //nolint:errcheck
+		idx.rollback()
 		return fmt.Errorf("prepare delete rels: %w", err)
 	}
 	defer delRelStmt.Close()
@@ -990,7 +1028,7 @@ func (idx *ladybugIndex) removeChunk(ids []string) error {
 		"MATCH (n:Entity {id: $id}) SET n.type = '', n.attrs = '{}'",
 	)
 	if err != nil {
-		idx.conn.Query("ROLLBACK") //nolint:errcheck
+		idx.rollback()
 		return fmt.Errorf("prepare clear: %w", err)
 	}
 	defer clearStmt.Close()
@@ -998,24 +1036,28 @@ func (idx *ladybugIndex) removeChunk(ids []string) error {
 	for _, id := range ids {
 		result, err := idx.conn.Execute(delRelStmt, map[string]any{"id": id})
 		if err != nil {
-			idx.conn.Query("ROLLBACK") //nolint:errcheck
+			idx.rollback()
 			return fmt.Errorf("delete rels for %s: %w", id, err)
 		}
 		result.Close()
 
 		result, err = idx.conn.Execute(clearStmt, map[string]any{"id": id})
 		if err != nil {
-			idx.conn.Query("ROLLBACK") //nolint:errcheck
+			idx.rollback()
 			return fmt.Errorf("clear entity %s: %w", id, err)
 		}
 		result.Close()
 
-		idx.removeEmbeddings(id)
+		idx.removeEmbeddings(id) //nolint:errcheck — inside transaction, best-effort
 	}
 
-	if _, err := idx.conn.Query("COMMIT"); err != nil {
-		idx.conn.Query("ROLLBACK") //nolint:errcheck
+	r, err = idx.conn.Query("COMMIT")
+	if err != nil {
+		idx.rollback()
 		return fmt.Errorf("commit transaction: %w", err)
+	}
+	if r != nil {
+		r.Close()
 	}
 	return nil
 }

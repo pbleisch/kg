@@ -36,10 +36,11 @@ type EmbedInput struct {
 
 // EmbedResult collects statistics from an embed operation.
 type EmbedResult struct {
-	Embedded int      `json:"embedded"`
-	Skipped  int      `json:"skipped"`
-	Errors   int      `json:"errors"`
-	Warnings []string `json:"warnings,omitempty"`
+	Embedded       int      `json:"embedded"`
+	Skipped        int      `json:"skipped"`
+	Errors         int      `json:"errors"`
+	Warnings       []string `json:"warnings,omitempty"`
+	FailedEntities []string `json:"failed_entities,omitempty"`
 }
 
 func embedManifestPath(kgDir string) string {
@@ -183,9 +184,15 @@ func Embed(kgDir string, rebuild bool, dryRun bool, entityIDs ...string) (*Embed
 		}
 		vectors, err := RunEmbedBatch(ecfg.Command, inputs)
 		if err != nil {
+			for _, s := range stale {
+				result.FailedEntities = append(result.FailedEntities, s.entity.ID)
+			}
 			return result, fmt.Errorf("batch embed: %w", err)
 		}
 		if len(vectors) != len(stale) {
+			for _, s := range stale {
+				result.FailedEntities = append(result.FailedEntities, s.entity.ID)
+			}
 			return result, fmt.Errorf("batch embed returned %d vectors, expected %d", len(vectors), len(stale))
 		}
 		for i, s := range stale {
@@ -194,6 +201,7 @@ func Embed(kgDir string, rebuild bool, dryRun bool, entityIDs ...string) (*Embed
 			if err := WriteEntity(kgDir, s.entity); err != nil {
 				result.Warnings = append(result.Warnings, fmt.Sprintf("%s: write: %v", s.entity.ID, err))
 				result.Errors++
+				result.FailedEntities = append(result.FailedEntities, s.entity.ID)
 				continue
 			}
 			if manifest.Entries[s.entity.ID] == nil {
@@ -217,6 +225,7 @@ func Embed(kgDir string, rebuild bool, dryRun bool, entityIDs ...string) (*Embed
 			if err != nil {
 				result.Warnings = append(result.Warnings, fmt.Sprintf("%s/%s: %v", s.entity.ID, s.field, err))
 				result.Errors++
+				result.FailedEntities = append(result.FailedEntities, s.entity.ID)
 				continue
 			}
 			embField := s.field + "_embedding"
@@ -224,6 +233,7 @@ func Embed(kgDir string, rebuild bool, dryRun bool, entityIDs ...string) (*Embed
 			if err := WriteEntity(kgDir, s.entity); err != nil {
 				result.Warnings = append(result.Warnings, fmt.Sprintf("%s: write: %v", s.entity.ID, err))
 				result.Errors++
+				result.FailedEntities = append(result.FailedEntities, s.entity.ID)
 				continue
 			}
 			if manifest.Entries[s.entity.ID] == nil {

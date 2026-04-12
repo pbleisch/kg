@@ -4,7 +4,7 @@ Status: Accepted
 
 Date: 2026-02-01
 
-Updated: 2026-04
+Updated: 2026-07
 
 Authors: Paul
 
@@ -58,6 +58,42 @@ Each `.kg` directory gets its own daemon, sockets, and PID file. Socket paths ar
 
 Unix socket file permissions provide OS-level access control. No token auth — this is a single-user local tool. The daemon is only accessible to the file owner.
 
+### Daemon lifecycle redesign
+
+**Socket-bind-as-lock.** `net.Listen("unix", sockPath)` is the atomic mutex. If it fails with EADDRINUSE, another daemon is running. This replaces all check-then-act (TOCTOU) patterns in auto-start.
+
+**PID validation on startup.** `cleanStale()` reads the PID file, checks if the process is alive via `Signal(0)`. Dead process → clean up stale sockets and PID. Live process → let socket-bind detect the conflict.
+
+**Idempotent Stop().** Uses `sync.Once` to prevent double-close panic on the `done` channel. Multiple concurrent callers (idle timeout, signal handler, control socket) all safely converge.
+
+**RPC drain before shutdown.** `IndexService` tracks in-flight RPCs via `sync.WaitGroup`. `Drain()` sets a draining flag (rejects new RPCs) then waits for active ones to complete. `Stop()` calls `Drain()` before closing the index.
+
+**Ping health check.** `DaemonAvailable()` now performs an actual RPC `Ping()` call instead of just probing the socket. Distinguishes "alive and responsive" from "stale socket on disk."
+
+**Start() error cleanup.** Success-flag pattern ensures sockets, PID file, and listeners are cleaned up on any error during startup.
+
+**OpenIndex fallback.** If Ping succeeds but DialRemote fails, falls back to direct index access with a warning log instead of returning an error.
+
+**Post-crash index smoke test.** On startup, daemon runs `FindByType("__smoke_test__")` to verify the index is queryable. If corrupted, blows away `.cache/ladybug/` and rebuilds from YAML.
+
+### Index durability
+
+**Atomic manifest writes.** `SaveManifest()` uses temp file → fsync → rename pattern. Crash during write leaves either the old or new manifest, never a truncated one.
+
+**Transaction result cleanup.** All BEGIN/COMMIT/ROLLBACK `Query()` results properly closed to prevent resource leaks in go-ladybug connection.
+
+**Embedding errors propagated.** `upsertEmbeddings()` returns errors instead of silently swallowing them. Embedding failures prevent manifest update for affected entities, ensuring retry on next sync.
+
+**ensureEmbVec state safety.** `embDim` and `embStmt` only set after all initialization steps succeed, preventing nil-pointer use from partial init.
+
+**Rollback error handling.** Rollback failures logged as warnings instead of suppressed, making connection-state issues visible.
+
+### Daemon logging
+
+**File-based logging with rotation.** Daemon logs to `.cache/daemon.log` with 5 MB size-based rotation (1 backup). Sentinel file `.cache/daemon.logfile` points to the active log path.
+
+**`kg daemon logs` command.** New subcommand to view daemon logs, with `--follow`/`-f` flag for real-time tailing.
+
 Alternatives Considered
 -----------------------
 - **gRPC / protobuf** — typed API and streaming, but adds a large dependency for a local single-user tool. `net/rpc` with gob is zero-dep and sufficient.
@@ -71,6 +107,10 @@ Consequences
 - Auto-start/stop means users don't manage daemons manually; `KG_NO_DAEMON` is the escape hatch.
 - Two sockets add modest complexity but cleanly separate streaming (control) from request/response (RPC).
 - Transparent fallback to direct index access means the daemon is never required.
+- Socket-bind-as-lock eliminates TOCTOU races in auto-start without advisory lock files.
+- RPC drain guarantees in-flight operations complete before shutdown, avoiding index corruption.
+- Atomic manifest writes and proper transaction cleanup make the index resilient to crashes.
+- File-based logging with rotation provides post-mortem debugging without unbounded disk growth.
 
 Related Decisions
 -----------------

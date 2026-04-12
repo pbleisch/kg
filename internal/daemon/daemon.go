@@ -38,7 +38,11 @@ type Daemon struct {
 	service    *IndexService
 	watcher    *fsnotify.Watcher
 	log        *log.Logger
+	logFile    *os.File // log file handle; nil when logging elsewhere
+	loggerSet  bool     // true if caller provided a logger via WithLogger
+	quiet      bool
 	done         chan struct{}
+	stopOnce     sync.Once
 	wg           sync.WaitGroup
 	lastActivity atomic.Int64  // unix timestamp of last activity
 	idleTimeout  time.Duration
@@ -60,12 +64,18 @@ type Option func(*Daemon)
 
 // WithLogger sets a custom logger. Default is log.Default() (writes to stderr).
 func WithLogger(l *log.Logger) Option {
-	return func(d *Daemon) { d.log = l }
+	return func(d *Daemon) {
+		d.log = l
+		d.loggerSet = true
+	}
 }
 
 // WithQuiet disables all logging output.
 func WithQuiet() Option {
-	return func(d *Daemon) { d.log = log.New(io.Discard, "", 0) }
+	return func(d *Daemon) {
+		d.log = log.New(io.Discard, "", 0)
+		d.quiet = true
+	}
 }
 
 // SocketPathFor returns the Unix socket path for the given kgDir.
@@ -86,6 +96,35 @@ func sha256Sum(s string) [32]byte {
 	return sha256.Sum256([]byte(s))
 }
 
+// cleanStale removes leftover sockets and PID files from a previous daemon
+// that crashed or was killed with SIGKILL. If the recorded PID is still
+// running, it leaves everything alone so that socket-bind detects the conflict.
+func cleanStale(kgDir string) {
+	pid, err := readPID(kgDir)
+	if err != nil {
+		return
+	}
+	if pid == 0 {
+		// No PID file — just clean up any orphaned socket files.
+		removeStaleFiles(kgDir)
+		return
+	}
+	if isRunning(pid) {
+		// Process exists — daemon is probably running.
+		// Don't clean up; let socket-bind detect the conflict.
+		return
+	}
+	// PID file exists but process is dead — stale state from crash/SIGKILL.
+	log.Printf("cleaning stale daemon state (pid %d no longer running)", pid)
+	removeStaleFiles(kgDir)
+}
+
+func removeStaleFiles(kgDir string) {
+	os.Remove(SocketPathFor(kgDir))
+	os.Remove(RPCSocketPath(kgDir))
+	removePID(kgDir) //nolint:errcheck
+}
+
 // Start creates and starts a new Daemon for the knowledge graph at kgDir.
 func Start(kgDir string, opts ...Option) (*Daemon, error) {
 	absDir, err := filepath.Abs(kgDir)
@@ -103,6 +142,37 @@ func Start(kgDir string, opts ...Option) (*Daemon, error) {
 		return nil, fmt.Errorf("create cache dir: %w", err)
 	}
 
+	// Clean stale sockets/PID from a previous crash. If the old daemon
+	// is still alive the sockets remain and Listen will fail below —
+	// that is the intended lock mechanism.
+	cleanStale(absDir)
+
+	sockPath := SocketPathFor(absDir)
+	rpcSockPath := RPCSocketPath(absDir)
+
+	// Bind control socket — this is the atomic mutex that prevents
+	// two daemons from running concurrently.
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		return nil, fmt.Errorf("daemon already running or socket conflict: %w", err)
+	}
+
+	// Everything below is guarded by the success flag: if any setup
+	// step fails, the deferred cleanup removes sockets and PID file.
+	success := false
+	defer func() {
+		if !success {
+			ln.Close()
+			os.Remove(sockPath)
+			os.Remove(rpcSockPath)
+			removePID(absDir) //nolint:errcheck
+		}
+	}()
+
+	if err := writePID(absDir); err != nil {
+		return nil, fmt.Errorf("write pid: %w", err)
+	}
+
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, fmt.Errorf("create watcher: %w", err)
@@ -114,49 +184,46 @@ func Start(kgDir string, opts ...Option) (*Daemon, error) {
 		return nil, fmt.Errorf("watch entities: %w", err)
 	}
 
-	sockPath := SocketPathFor(absDir)
-	// Clean up stale socket file.
-	os.Remove(sockPath)
-
-	ln, err := net.Listen("unix", sockPath)
-	if err != nil {
-		watcher.Close()
-		return nil, fmt.Errorf("listen socket: %w", err)
-	}
-
-	if err := writePID(absDir); err != nil {
-		ln.Close()
-		watcher.Close()
-		return nil, fmt.Errorf("write pid: %w", err)
-	}
-
 	// Bypass daemon detection for this call only — we ARE the daemon.
 	store.SetOpenIndexDirect(true)
 	idx, err := store.OpenIndex(absDir)
-	store.SetOpenIndexDirect(false)
 	if err != nil {
-		ln.Close()
+		store.SetOpenIndexDirect(false)
 		watcher.Close()
 		return nil, fmt.Errorf("open index: %w", err)
 	}
+
+	// Smoke test: verify index is queryable after open. If corrupted from a
+	// previous unclean shutdown, blow away the cache and rebuild.
+	if _, err := idx.FindByType("__smoke_test_nonexistent__"); err != nil {
+		log.Printf("WARNING: index smoke test failed: %v; triggering rebuild", err)
+		idx.Close()
+		os.RemoveAll(filepath.Join(absDir, ".cache", "ladybug"))
+		idx, err = store.OpenIndex(absDir)
+		if err != nil {
+			store.SetOpenIndexDirect(false)
+			watcher.Close()
+			return nil, fmt.Errorf("index rebuild failed: %w", err)
+		}
+		log.Printf("index rebuilt successfully")
+	}
+	store.SetOpenIndexDirect(false)
 
 	// Set up RPC service.
 	svc := NewIndexService(absDir, idx)
 	rpcSrv := rpc.NewServer()
 	if err := rpcSrv.Register(svc); err != nil {
 		idx.Close()
-		ln.Close()
 		watcher.Close()
 		return nil, fmt.Errorf("register rpc: %w", err)
 	}
 
-	// Listen on RPC socket.
-	rpcSockPath := RPCSocketPath(absDir)
+	// We own the lock (control socket bound), so it's safe to remove
+	// a leftover RPC socket before binding.
 	os.Remove(rpcSockPath)
 	rpcLn, err := net.Listen("unix", rpcSockPath)
 	if err != nil {
 		idx.Close()
-		ln.Close()
 		watcher.Close()
 		return nil, fmt.Errorf("listen rpc socket: %w", err)
 	}
@@ -183,6 +250,18 @@ func Start(kgDir string, opts ...Option) (*Daemon, error) {
 		o(d)
 	}
 
+	// Default to file-based logging unless caller provided a logger or
+	// quiet mode was requested.
+	if !d.loggerSet && !d.quiet {
+		if lf, err := openLogFile(absDir); err == nil {
+			d.logFile = lf
+			d.log = log.New(lf, "kg-daemon: ", log.LstdFlags)
+			writeLogSentinel(absDir, lf.Name()) //nolint:errcheck
+		} else {
+			d.log = log.New(io.Discard, "", 0)
+		}
+	}
+
 	// Share logger with the RPC service.
 	svc.log = d.log
 
@@ -204,34 +283,46 @@ func Start(kgDir string, opts ...Option) (*Daemon, error) {
 
 	d.log.Printf("started (dir=%s, control=%s, rpc=%s)", absDir, sockPath, rpcSockPath)
 
+	success = true
 	return d, nil
 }
 
-// Stop shuts down the daemon gracefully.
+// Stop shuts down the daemon gracefully. It is safe to call multiple times;
+// only the first call performs the shutdown.
 func (d *Daemon) Stop() error {
-	d.log.Printf("stopping")
-	close(d.done)
-	d.listener.Close()
-	d.rpcLn.Close()
-	d.watcher.Close()
-	d.wg.Wait()
-	// Close all subscriber connections.
-	d.subMu.Lock()
-	nSubs := len(d.subscribers)
-	for conn := range d.subscribers {
-		conn.Close()
-	}
-	d.subscribers = nil
-	d.subMu.Unlock()
-	if nSubs > 0 {
-		d.log.Printf("closed %d subscriber(s)", nSubs)
-	}
-	// Close the held-open index.
-	d.service.idx.Close()
-	os.Remove(d.socketPath)
-	os.Remove(d.rpcPath)
-	removePID(d.kgDir)
-	d.log.Printf("stopped")
+	d.stopOnce.Do(func() {
+		d.log.Printf("stopping")
+
+		// Drain in-flight RPCs before tearing anything down.
+		d.service.Drain()
+
+		close(d.done)
+		d.listener.Close()
+		d.rpcLn.Close()
+		d.watcher.Close()
+		d.wg.Wait()
+		// Close all subscriber connections.
+		d.subMu.Lock()
+		nSubs := len(d.subscribers)
+		for conn := range d.subscribers {
+			conn.Close()
+		}
+		d.subscribers = nil
+		d.subMu.Unlock()
+		if nSubs > 0 {
+			d.log.Printf("closed %d subscriber(s)", nSubs)
+		}
+		// Close the held-open index.
+		d.service.idx.Close()
+		os.Remove(d.socketPath)
+		os.Remove(d.rpcPath)
+		removePID(d.kgDir)
+		removeLogSentinel(d.kgDir) //nolint:errcheck
+		d.log.Printf("stopped")
+		if d.logFile != nil {
+			d.logFile.Close()
+		}
+	})
 	return nil
 }
 
@@ -242,6 +333,45 @@ func (d *Daemon) Done() <-chan struct{} {
 
 func (d *Daemon) touch() {
 	d.lastActivity.Store(time.Now().Unix())
+}
+
+// LogPath returns the path of the daemon's active log file, or empty string
+// if the daemon is not using file-based logging.
+func (d *Daemon) LogPath() string {
+	if d.logFile != nil {
+		return d.logFile.Name()
+	}
+	return ""
+}
+
+// rotateLogIfNeeded checks whether the log file exceeds maxLogSize and, if
+// so, rotates it.
+func (d *Daemon) rotateLogIfNeeded() {
+	if d.logFile == nil {
+		return
+	}
+	info, err := d.logFile.Stat()
+	if err != nil || info.Size() <= maxLogSize {
+		return
+	}
+
+	oldPath := d.logFile.Name()
+	d.logFile.Close()
+
+	backup := filepath.Join(filepath.Dir(oldPath), logBackup)
+	os.Rename(oldPath, backup) // best-effort
+
+	f, err := os.OpenFile(oldPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		d.logFile = nil
+		d.log = log.New(io.Discard, "", 0)
+		return
+	}
+	d.logFile = f
+	d.log = log.New(f, "kg-daemon: ", log.LstdFlags)
+	d.service.log = d.log
+	writeLogSentinel(d.kgDir, f.Name()) //nolint:errcheck
+	d.log.Printf("log rotated")
 }
 
 func (d *Daemon) idleLoop() {
@@ -256,6 +386,7 @@ func (d *Daemon) idleLoop() {
 		case <-d.done:
 			return
 		case <-ticker.C:
+			d.rotateLogIfNeeded()
 			last := d.lastActivity.Load()
 			if last > 0 && time.Since(time.Unix(last, 0)) > d.idleTimeout {
 				d.log.Printf("idle for %s, shutting down", d.idleTimeout)
@@ -603,7 +734,13 @@ func (d *Daemon) syncAndBroadcast() {
 	if err != nil {
 		d.log.Printf("sync: list entities error: %v", err)
 		d.service.mu.Lock()
-		store.SyncWithIndex(d.kgDir, d.service.idx) //nolint:errcheck
+		if syncResult, syncErr := store.SyncWithIndex(d.kgDir, d.service.idx); syncErr != nil {
+			d.log.Printf("sync: error: %v", syncErr)
+		} else if syncResult != nil {
+			for _, w := range syncResult.Warnings {
+				d.log.Printf("WARNING: %s", w)
+			}
+		}
 		d.service.mu.Unlock()
 		return
 	}
@@ -640,7 +777,13 @@ func (d *Daemon) syncAndBroadcast() {
 
 	// Sync index.
 	d.service.mu.Lock()
-	store.SyncWithIndex(d.kgDir, d.service.idx) //nolint:errcheck
+	if syncResult, syncErr := store.SyncWithIndex(d.kgDir, d.service.idx); syncErr != nil {
+		d.log.Printf("sync: error: %v", syncErr)
+	} else if syncResult != nil {
+		for _, w := range syncResult.Warnings {
+			d.log.Printf("WARNING: %s", w)
+		}
+	}
 	d.service.mu.Unlock()
 
 	d.log.Printf("sync: %d entities, %d events (%s)", len(newEntities), len(events), time.Since(start).Round(time.Millisecond))

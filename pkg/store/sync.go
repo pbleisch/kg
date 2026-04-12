@@ -46,12 +46,15 @@ func manifestPath(kgDir string) string {
 }
 
 // LoadManifest reads the manifest from disk. Returns an empty manifest if the
-// file does not exist.
+// file does not exist. If the main file is missing but a .tmp file exists
+// (incomplete atomic write), the .tmp is cleaned up.
 func LoadManifest(kgDir string) (*Manifest, error) {
 	p := manifestPath(kgDir)
 	data, err := os.ReadFile(p)
 	if err != nil {
 		if os.IsNotExist(err) {
+			// Clean up incomplete atomic write if present.
+			os.Remove(p + ".tmp")
 			return &Manifest{Version: 1, Files: make(map[string]FileEntry)}, nil
 		}
 		return nil, fmt.Errorf("reading manifest: %w", err)
@@ -67,7 +70,8 @@ func LoadManifest(kgDir string) (*Manifest, error) {
 	return &m, nil
 }
 
-// SaveManifest writes the manifest to disk, creating directories as needed.
+// SaveManifest writes the manifest to disk atomically, creating directories
+// as needed. Uses temp file → fsync → rename to prevent truncation on crash.
 func SaveManifest(kgDir string, m *Manifest) error {
 	p := manifestPath(kgDir)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -79,8 +83,29 @@ func SaveManifest(kgDir string, m *Manifest) error {
 		return fmt.Errorf("marshaling manifest: %w", err)
 	}
 
-	if err := os.WriteFile(p, data, 0o644); err != nil {
-		return fmt.Errorf("writing manifest: %w", err)
+	// Atomic write: temp file → fsync → rename
+	tmp := p + ".tmp"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return fmt.Errorf("creating temp manifest: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return fmt.Errorf("writing temp manifest: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return fmt.Errorf("syncing temp manifest: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("closing temp manifest: %w", err)
+	}
+	if err := os.Rename(tmp, p); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("renaming manifest: %w", err)
 	}
 	return nil
 }
@@ -268,12 +293,7 @@ func SyncWithIndex(kgDir string, idx Indexer) (*SyncResult, error) {
 				}
 			}
 		}
-		for _, fi := range upsertInfo {
-			manifest.Files[fi.rel] = FileEntry{
-				Checksum: fi.checksum,
-				ModTime:  fi.modTime,
-			}
-		}
+		// Manifest update deferred until after embedding pass.
 	}
 
 	// Collect deleted files and batch-remove from index.
@@ -301,13 +321,28 @@ func SyncWithIndex(kgDir string, idx Indexer) (*SyncResult, error) {
 		}
 	}
 
+	// Run embedding pass if configured (best-effort).
+	embedded, failedEmbeds := syncEmbed(kgDir, false)
+	result.Embedded = embedded
+
+	// Update manifest for upserted entities, skipping those with embedding failures
+	// so they will be re-processed on next sync.
+	for i, fi := range upsertInfo {
+		if _, failed := failedEmbeds[toUpsert[i].ID]; failed {
+			result.Warnings = append(result.Warnings,
+				fmt.Sprintf("%s: embedding failed, will retry on next sync", toUpsert[i].ID))
+			continue
+		}
+		manifest.Files[fi.rel] = FileEntry{
+			Checksum: fi.checksum,
+			ModTime:  fi.modTime,
+		}
+	}
+
 	manifest.SyncedAt = time.Now()
 	if err := SaveManifest(kgDir, manifest); err != nil {
 		return result, fmt.Errorf("saving manifest: %w", err)
 	}
-
-	// Run embedding pass if configured (best-effort).
-	result.Embedded = syncEmbed(kgDir, false)
 
 	return result, nil
 }
@@ -443,23 +478,30 @@ func RebuildWithResult(kgDir string) (*SyncResult, error) {
 	}
 
 	// Run embedding pass if configured — rebuild embeddings too.
-	result.Embedded = syncEmbed(kgDir, true)
+	embedded, _ := syncEmbed(kgDir, true)
+	result.Embedded = embedded
 
 	return result, nil
 }
 
 // syncEmbed runs an embed pass as part of sync. Returns count of entities
-// embedded. Best-effort: embedding failures don't fail the sync.
-func syncEmbed(kgDir string, rebuild bool) int {
+// embedded and a set of entity IDs whose embeddings failed.
+func syncEmbed(kgDir string, rebuild bool) (int, map[string]struct{}) {
+	failed := make(map[string]struct{})
 	cfg, err := LoadConfig(kgDir)
 	if err != nil || cfg.Embedding == nil || cfg.Embedding.Command == "" {
-		return 0
+		return 0, failed
 	}
 	embedResult, err := Embed(kgDir, rebuild, false)
-	if err != nil || embedResult == nil {
-		return 0
+	if embedResult != nil {
+		for _, id := range embedResult.FailedEntities {
+			failed[id] = struct{}{}
+		}
 	}
-	return embedResult.Embedded
+	if err != nil || embedResult == nil {
+		return 0, failed
+	}
+	return embedResult.Embedded, failed
 }
 
 // entityFromRelPath attempts to read an entity from a relative path within

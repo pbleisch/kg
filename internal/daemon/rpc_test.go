@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/pbleisch/kg/pkg/store"
 )
@@ -368,6 +369,43 @@ func TestRPCRoundTrip(t *testing.T) {
 	})
 }
 
+func TestDrainWaitsForActiveRPCs(t *testing.T) {
+	svc := &IndexService{}
+
+	// Simulate an in-flight RPC via enter().
+	if err := svc.enter(); err != nil {
+		t.Fatalf("enter: %v", err)
+	}
+
+	drained := make(chan struct{})
+	go func() {
+		svc.Drain()
+		close(drained)
+	}()
+
+	// Drain must block while the RPC is outstanding.
+	select {
+	case <-drained:
+		t.Fatal("Drain returned before active RPC completed")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// Complete the simulated RPC.
+	svc.activeRPCs.Done()
+
+	select {
+	case <-drained:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Drain did not return after active RPC completed")
+	}
+
+	// After drain, new RPCs must be rejected.
+	if err := svc.enter(); err == nil {
+		svc.activeRPCs.Done()
+		t.Error("enter succeeded after Drain, want error")
+	}
+}
+
 func TestDaemonAvailable(t *testing.T) {
 	t.Run("true_when_listening", func(t *testing.T) {
 		// Use a short path to stay within Unix socket length limits.
@@ -382,6 +420,22 @@ func TestDaemonAvailable(t *testing.T) {
 			t.Fatalf("Listen: %v", err)
 		}
 		defer ln.Close()
+
+		// DaemonAvailable now does an RPC Ping, so we need a real RPC server.
+		srv := rpc.NewServer()
+		svc := &IndexService{kgDir: dir}
+		if err := srv.RegisterName(ServiceName, svc); err != nil {
+			t.Fatalf("RegisterName: %v", err)
+		}
+		go func() {
+			for {
+				conn, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				go srv.ServeConn(conn)
+			}
+		}()
 
 		if !store.DaemonAvailable(socketPath) {
 			t.Error("DaemonAvailable = false, want true")

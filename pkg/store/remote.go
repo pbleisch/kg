@@ -78,15 +78,19 @@ func DialRemote(socketPath string) (Indexer, error) {
 	return &remoteIndex{client: rpc.NewClient(conn)}, nil
 }
 
-// DaemonAvailable checks if a daemon RPC socket is accepting connections.
-// It does a quick dial with a short timeout and closes immediately.
+// DaemonAvailable checks if a daemon RPC socket is live and healthy by
+// issuing a Ping RPC rather than just probing the socket.
 func DaemonAvailable(socketPath string) bool {
 	conn, err := net.DialTimeout("unix", socketPath, 100*time.Millisecond)
 	if err != nil {
 		return false
 	}
-	conn.Close()
-	return true
+	client := rpc.NewClient(conn)
+	defer client.Close()
+
+	var reply rpcPingReply
+	err = client.Call(rpcServiceName+".Ping", &rpcPingArgs{}, &reply)
+	return err == nil && reply.OK
 }
 
 // call is a helper that prefixes the service name.
@@ -179,6 +183,9 @@ func (r *remoteIndex) SimilarEntities(params SimilarityParams) ([]SimilarityResu
 // ── StatsProvider ───────────────────────────────────────────────────────
 
 type rpcStatsReply struct{ Stats *IndexStats }
+
+type rpcPingArgs struct{}
+type rpcPingReply struct{ OK bool }
 
 func (r *remoteIndex) IndexStats() (*IndexStats, error) {
 	var reply rpcStatsReply

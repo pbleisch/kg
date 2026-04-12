@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pbleisch/kg/pkg/store"
@@ -13,10 +14,12 @@ import (
 // IndexService wraps a store.Indexer for net/rpc dispatch.
 // Read methods acquire a read lock; write methods acquire a write lock.
 type IndexService struct {
-	mu    sync.RWMutex
-	idx   store.Indexer
-	kgDir string
-	log   *log.Logger
+	mu         sync.RWMutex
+	idx        store.Indexer
+	kgDir      string
+	log        *log.Logger
+	activeRPCs sync.WaitGroup
+	draining   atomic.Bool
 }
 
 // NewIndexService returns an IndexService backed by idx.
@@ -24,9 +27,38 @@ func NewIndexService(kgDir string, idx store.Indexer) *IndexService {
 	return &IndexService{kgDir: kgDir, idx: idx, log: log.New(io.Discard, "", 0)}
 }
 
+// enter registers an in-flight RPC. It returns an error if the service is
+// draining. Callers must defer s.activeRPCs.Done() on success.
+func (s *IndexService) enter() error {
+	s.activeRPCs.Add(1)
+	if s.draining.Load() {
+		s.activeRPCs.Done()
+		return fmt.Errorf("service is shutting down")
+	}
+	return nil
+}
+
+// Drain marks the service as draining and blocks until all in-flight RPCs
+// have completed. New RPCs will be rejected after this call.
+func (s *IndexService) Drain() {
+	s.draining.Store(true)
+	s.activeRPCs.Wait()
+}
+
+// Ping is a lightweight health check. It responds even during drain so
+// callers can distinguish "shutting down" from "dead".
+func (s *IndexService) Ping(_ *PingArgs, reply *PingReply) error {
+	reply.OK = !s.draining.Load()
+	return nil
+}
+
 // --- read methods (RLock) ---
 
 func (s *IndexService) GetEntity(args *GetEntityArgs, reply *GetEntityReply) error {
+	if err := s.enter(); err != nil {
+		return err
+	}
+	defer s.activeRPCs.Done()
 	start := time.Now()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -41,6 +73,10 @@ func (s *IndexService) GetEntity(args *GetEntityArgs, reply *GetEntityReply) err
 }
 
 func (s *IndexService) FindByType(args *FindByTypeArgs, reply *IDsReply) error {
+	if err := s.enter(); err != nil {
+		return err
+	}
+	defer s.activeRPCs.Done()
 	start := time.Now()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -55,6 +91,10 @@ func (s *IndexService) FindByType(args *FindByTypeArgs, reply *IDsReply) error {
 }
 
 func (s *IndexService) FindByRelationTarget(args *FindByRelTargetArgs, reply *IDsReply) error {
+	if err := s.enter(); err != nil {
+		return err
+	}
+	defer s.activeRPCs.Done()
 	start := time.Now()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -68,6 +108,10 @@ func (s *IndexService) FindByRelationTarget(args *FindByRelTargetArgs, reply *ID
 }
 
 func (s *IndexService) FindEntities(args *FindEntitiesArgs, reply *FindEntitiesReply) error {
+	if err := s.enter(); err != nil {
+		return err
+	}
+	defer s.activeRPCs.Done()
 	start := time.Now()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -82,6 +126,10 @@ func (s *IndexService) FindEntities(args *FindEntitiesArgs, reply *FindEntitiesR
 }
 
 func (s *IndexService) FindReferrers(args *FindReferrersArgs, reply *IDsReply) error {
+	if err := s.enter(); err != nil {
+		return err
+	}
+	defer s.activeRPCs.Done()
 	start := time.Now()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -95,6 +143,10 @@ func (s *IndexService) FindReferrers(args *FindReferrersArgs, reply *IDsReply) e
 }
 
 func (s *IndexService) SimilarEntities(args *SimilarArgs, reply *SimilarReply) error {
+	if err := s.enter(); err != nil {
+		return err
+	}
+	defer s.activeRPCs.Done()
 	start := time.Now()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -115,6 +167,10 @@ func (s *IndexService) SimilarEntities(args *SimilarArgs, reply *SimilarReply) e
 // --- write methods (Lock) ---
 
 func (s *IndexService) AddEntity(args *EntityArgs, reply *Empty) error {
+	if err := s.enter(); err != nil {
+		return err
+	}
+	defer s.activeRPCs.Done()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	err := s.idx.AddEntity(args.Entity)
@@ -127,6 +183,10 @@ func (s *IndexService) AddEntity(args *EntityArgs, reply *Empty) error {
 }
 
 func (s *IndexService) RemoveEntity(args *RemoveEntityArgs, reply *Empty) error {
+	if err := s.enter(); err != nil {
+		return err
+	}
+	defer s.activeRPCs.Done()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	err := s.idx.RemoveEntity(args.ID)
@@ -139,6 +199,10 @@ func (s *IndexService) RemoveEntity(args *RemoveEntityArgs, reply *Empty) error 
 }
 
 func (s *IndexService) UpsertEntity(args *EntityArgs, reply *Empty) error {
+	if err := s.enter(); err != nil {
+		return err
+	}
+	defer s.activeRPCs.Done()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	err := s.idx.UpsertEntity(args.Entity)
@@ -151,6 +215,10 @@ func (s *IndexService) UpsertEntity(args *EntityArgs, reply *Empty) error {
 }
 
 func (s *IndexService) UpsertEntities(args *EntitiesArgs, reply *Empty) error {
+	if err := s.enter(); err != nil {
+		return err
+	}
+	defer s.activeRPCs.Done()
 	start := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -173,6 +241,10 @@ func (s *IndexService) UpsertEntities(args *EntitiesArgs, reply *Empty) error {
 }
 
 func (s *IndexService) RemoveEntities(args *RemoveEntitiesArgs, reply *Empty) error {
+	if err := s.enter(); err != nil {
+		return err
+	}
+	defer s.activeRPCs.Done()
 	start := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -195,6 +267,10 @@ func (s *IndexService) RemoveEntities(args *RemoveEntitiesArgs, reply *Empty) er
 }
 
 func (s *IndexService) Sync(_ *SyncArgs, reply *SyncReply) error {
+	if err := s.enter(); err != nil {
+		return err
+	}
+	defer s.activeRPCs.Done()
 	start := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -204,11 +280,18 @@ func (s *IndexService) Sync(_ *SyncArgs, reply *SyncReply) error {
 		return err
 	}
 	reply.Result = result
+	for _, w := range result.Warnings {
+		s.log.Printf("WARNING: %s", w)
+	}
 	s.log.Printf("rpc Sync (%s)", time.Since(start).Round(time.Microsecond))
 	return nil
 }
 
 func (s *IndexService) IndexStats(_ *Empty, reply *StatsReply) error {
+	if err := s.enter(); err != nil {
+		return err
+	}
+	defer s.activeRPCs.Done()
 	start := time.Now()
 	s.mu.RLock()
 	defer s.mu.RUnlock()

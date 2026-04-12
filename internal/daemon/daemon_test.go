@@ -4,6 +4,9 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -111,6 +114,26 @@ func TestFileChangeTriggerSync(t *testing.T) {
 	}
 }
 
+func TestConcurrentStop(t *testing.T) {
+	kgDir := setupTestKG(t)
+
+	d, err := Start(kgDir, WithQuiet())
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			d.Stop()
+		}()
+	}
+	wg.Wait()
+	// If we reach here without a panic, the sync.Once guard works.
+}
+
 func TestPIDFileRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".cache"), 0o755); err != nil {
@@ -143,5 +166,88 @@ func TestPIDFileRoundTrip(t *testing.T) {
 	}
 	if pid2 != 0 {
 		t.Errorf("pid after remove = %d, want 0", pid2)
+	}
+}
+
+func TestSocketBindPreventsSecondDaemon(t *testing.T) {
+	kgDir := setupTestKG(t)
+
+	d1, err := Start(kgDir, WithQuiet())
+	if err != nil {
+		t.Fatalf("Start daemon 1: %v", err)
+	}
+
+	// Attempting to start a second daemon on the same kgDir must fail
+	// because the first daemon holds the socket lock.
+	_, err = Start(kgDir, WithQuiet())
+	if err == nil {
+		t.Fatal("Start daemon 2: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "already running") && !strings.Contains(err.Error(), "address already in use") {
+		t.Fatalf("Start daemon 2: unexpected error: %v", err)
+	}
+
+	if err := d1.Stop(); err != nil {
+		t.Fatalf("Stop daemon 1: %v", err)
+	}
+
+	// Verify daemon 1 cleaned up.
+	if _, err := os.Stat(SocketPathFor(kgDir)); !os.IsNotExist(err) {
+		t.Error("socket file still exists after stop")
+	}
+	if _, err := os.Stat(pidPath(kgDir)); !os.IsNotExist(err) {
+		t.Error("pid file still exists after stop")
+	}
+}
+
+func TestCleanStaleRecovery(t *testing.T) {
+	kgDir := setupTestKG(t)
+
+	// Start and stop a daemon cleanly so the index exists.
+	d1, err := Start(kgDir, WithQuiet())
+	if err != nil {
+		t.Fatalf("Start daemon 1: %v", err)
+	}
+	if err := d1.Stop(); err != nil {
+		t.Fatalf("Stop daemon 1: %v", err)
+	}
+
+	// Simulate a crashed daemon: write a stale PID file pointing to a
+	// non-existent process and create stale socket files.
+	stalePID := 999999
+	if isRunning(stalePID) {
+		t.Skip("PID 999999 is actually running; cannot simulate stale state")
+	}
+
+	cacheDir := filepath.Join(kgDir, ".cache")
+	if err := os.WriteFile(pidPath(kgDir), []byte(strconv.Itoa(stalePID)), 0o644); err != nil {
+		t.Fatalf("write stale PID: %v", err)
+	}
+	if err := os.WriteFile(SocketPathFor(kgDir), []byte("stale"), 0o644); err != nil {
+		t.Fatalf("create stale socket: %v", err)
+	}
+	if err := os.WriteFile(RPCSocketPath(kgDir), []byte("stale"), 0o644); err != nil {
+		t.Fatalf("create stale rpc socket: %v", err)
+	}
+	_ = cacheDir // used implicitly via pidPath/SocketPathFor
+
+	// Start a new daemon — cleanStale should remove the stale files and
+	// allow the new daemon to bind the socket.
+	d2, err := Start(kgDir, WithQuiet())
+	if err != nil {
+		t.Fatalf("Start daemon 2 after stale cleanup: %v", err)
+	}
+
+	// Verify the new daemon is functional: PID file should reflect current process.
+	pid, err := readPID(kgDir)
+	if err != nil {
+		t.Fatalf("readPID: %v", err)
+	}
+	if pid != os.Getpid() {
+		t.Errorf("pid = %d, want %d", pid, os.Getpid())
+	}
+
+	if err := d2.Stop(); err != nil {
+		t.Fatalf("Stop daemon 2: %v", err)
 	}
 }
