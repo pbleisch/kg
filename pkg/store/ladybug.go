@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	lbug "github.com/LadybugDB/go-ladybug"
 )
@@ -20,6 +21,12 @@ type ladybugIndex struct {
 	embDim  int                    // embedding dimension (0 = not yet detected)
 	embStmt *lbug.PreparedStatement // cached MERGE statement for EmbVec upserts
 }
+
+// Compile-time interface checks.
+var (
+	_ Indexer      = (*ladybugIndex)(nil)
+	_ BatchIndexer = (*ladybugIndex)(nil)
+)
 
 func openLadybug(kgDir string) (Indexer, error) {
 	dbDir := filepath.Join(kgDir, ".cache", "ladybug")
@@ -838,22 +845,172 @@ func (idx *ladybugIndex) UpsertEntity(e *Entity) error {
 	return idx.AddEntity(e)
 }
 
-// UpsertEntities batch-upserts multiple entities.
+// UpsertEntities batch-upserts multiple entities in chunked transactions.
+// Each chunk of up to 500 entities is wrapped in a single BEGIN/COMMIT
+// to avoid per-entity auto-commit overhead (which triggers excessive
+// disk I/O and macOS CPU wake limits on large syncs).
 func (idx *ladybugIndex) UpsertEntities(entities []*Entity) error {
+	const chunkSize = 500
+	for i := 0; i < len(entities); i += chunkSize {
+		end := i + chunkSize
+		if end > len(entities) {
+			end = len(entities)
+		}
+		if err := idx.upsertChunk(entities[i:end]); err != nil {
+			return err
+		}
+		// Throttle between chunks to avoid macOS CPU wake limits.
+		if end < len(entities) {
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	return nil
+}
+
+func (idx *ladybugIndex) upsertChunk(entities []*Entity) error {
+	if _, err := idx.conn.Query("BEGIN TRANSACTION"); err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+
+	// Prepare statements once for the whole chunk.
+	mergeStmt, err := idx.conn.Prepare(
+		"MERGE (n:Entity {id: $id}) SET n.type = $type, n.attrs = $attrs",
+	)
+	if err != nil {
+		idx.conn.Query("ROLLBACK") //nolint:errcheck
+		return fmt.Errorf("prepare merge: %w", err)
+	}
+	defer mergeStmt.Close()
+
+	delRelStmt, err := idx.conn.Prepare(
+		"MATCH (n:Entity {id: $id})-[r:HasRel]->() DELETE r",
+	)
+	if err != nil {
+		idx.conn.Query("ROLLBACK") //nolint:errcheck
+		return fmt.Errorf("prepare delete rels: %w", err)
+	}
+	defer delRelStmt.Close()
+
+	createRelStmt, err := idx.conn.Prepare(
+		"MATCH (a:Entity {id: $from}) " +
+			"MERGE (b:Entity {id: $to}) " +
+			"CREATE (a)-[:HasRel {name: $name}]->(b)",
+	)
+	if err != nil {
+		idx.conn.Query("ROLLBACK") //nolint:errcheck
+		return fmt.Errorf("prepare create rel: %w", err)
+	}
+	defer createRelStmt.Close()
+
 	for _, e := range entities {
-		if err := idx.AddEntity(e); err != nil {
+		attrsJSON, err := json.Marshal(e.Attributes)
+		if err != nil {
+			idx.conn.Query("ROLLBACK") //nolint:errcheck
+			return fmt.Errorf("marshal attrs for %s: %w", e.ID, err)
+		}
+
+		result, err := idx.conn.Execute(mergeStmt, map[string]any{
+			"id":    e.ID,
+			"type":  e.Type,
+			"attrs": string(attrsJSON),
+		})
+		if err != nil {
+			idx.conn.Query("ROLLBACK") //nolint:errcheck
+			return fmt.Errorf("merge entity %s: %w", e.ID, err)
+		}
+		result.Close()
+
+		result, err = idx.conn.Execute(delRelStmt, map[string]any{"id": e.ID})
+		if err != nil {
+			idx.conn.Query("ROLLBACK") //nolint:errcheck
+			return fmt.Errorf("delete rels for %s: %w", e.ID, err)
+		}
+		result.Close()
+
+		for rel, targets := range e.Relations {
+			for _, t := range targets {
+				result, err = idx.conn.Execute(createRelStmt, map[string]any{
+					"from": e.ID,
+					"to":   t,
+					"name": rel,
+				})
+				if err != nil {
+					idx.conn.Query("ROLLBACK") //nolint:errcheck
+					return fmt.Errorf("create rel %s->%s for %s: %w", rel, t, e.ID, err)
+				}
+				result.Close()
+			}
+		}
+
+		idx.upsertEmbeddings(e)
+	}
+
+	if _, err := idx.conn.Query("COMMIT"); err != nil {
+		idx.conn.Query("ROLLBACK") //nolint:errcheck
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
+}
+
+// RemoveEntities batch-removes multiple entities in chunked transactions.
+func (idx *ladybugIndex) RemoveEntities(ids []string) error {
+	const chunkSize = 500
+	for i := 0; i < len(ids); i += chunkSize {
+		end := i + chunkSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		if err := idx.removeChunk(ids[i:end]); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// RemoveEntities batch-removes multiple entities by ID.
-func (idx *ladybugIndex) RemoveEntities(ids []string) error {
+func (idx *ladybugIndex) removeChunk(ids []string) error {
+	if _, err := idx.conn.Query("BEGIN TRANSACTION"); err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+
+	delRelStmt, err := idx.conn.Prepare(
+		"MATCH (n:Entity {id: $id})-[r:HasRel]->() DELETE r",
+	)
+	if err != nil {
+		idx.conn.Query("ROLLBACK") //nolint:errcheck
+		return fmt.Errorf("prepare delete rels: %w", err)
+	}
+	defer delRelStmt.Close()
+
+	clearStmt, err := idx.conn.Prepare(
+		"MATCH (n:Entity {id: $id}) SET n.type = '', n.attrs = '{}'",
+	)
+	if err != nil {
+		idx.conn.Query("ROLLBACK") //nolint:errcheck
+		return fmt.Errorf("prepare clear: %w", err)
+	}
+	defer clearStmt.Close()
+
 	for _, id := range ids {
-		if err := idx.RemoveEntity(id); err != nil {
-			return err
+		result, err := idx.conn.Execute(delRelStmt, map[string]any{"id": id})
+		if err != nil {
+			idx.conn.Query("ROLLBACK") //nolint:errcheck
+			return fmt.Errorf("delete rels for %s: %w", id, err)
 		}
+		result.Close()
+
+		result, err = idx.conn.Execute(clearStmt, map[string]any{"id": id})
+		if err != nil {
+			idx.conn.Query("ROLLBACK") //nolint:errcheck
+			return fmt.Errorf("clear entity %s: %w", id, err)
+		}
+		result.Close()
+
+		idx.removeEmbeddings(id)
+	}
+
+	if _, err := idx.conn.Query("COMMIT"); err != nil {
+		idx.conn.Query("ROLLBACK") //nolint:errcheck
+		return fmt.Errorf("commit transaction: %w", err)
 	}
 	return nil
 }

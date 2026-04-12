@@ -275,7 +275,7 @@ func setupEmbedDir(t *testing.T, entities []*Entity, embedCmd string, fields []s
 	if batch {
 		batchStr = "true"
 	}
-	configYAML := "backend: bolt\nembedding:\n  command: \"" + embedCmd + "\"\n  fields: [" + fieldList + "]\n  batch: " + batchStr + "\n"
+	configYAML := "backend: ladybug\nembedding:\n  command: \"" + embedCmd + "\"\n  fields: [" + fieldList + "]\n  batch: " + batchStr + "\n"
 	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0o644)
 	return dir
 }

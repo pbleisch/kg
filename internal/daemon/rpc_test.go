@@ -24,7 +24,7 @@ func startTestRPCServer(t *testing.T, kgDir string, entities []*store.Entity) (s
 		}
 	}
 
-	// Build the bolt index.
+	// Build the index.
 	if err := store.Sync(kgDir); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
