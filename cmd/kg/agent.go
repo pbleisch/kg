@@ -375,16 +375,14 @@ facts into the knowledge graph using this process:
 
 ### Example
 
-Given: "Paul mentioned he's been using Cayley for the graph index
-and really likes how BoltDB handles storage."
+Given: "Paul mentioned he's been using LadybugDB for the graph index
+and really likes how it handles storage."
 
 Extract:
 ` + "```" + `bash
-kg find topic name~Cayley --dir={{.KGDir}}   # check if exists
-kg create topic cayley name=Cayley category=technology --dir={{.KGDir}}
-kg create topic boltdb name=BoltDB category=technology --dir={{.KGDir}}
-kg link person:paul likes topic:cayley --dir={{.KGDir}}
-kg link person:paul likes topic:boltdb --dir={{.KGDir}}
+kg find topic name~LadybugDB --dir={{.KGDir}}   # check if exists
+kg create topic ladybugdb name=LadybugDB category=technology --dir={{.KGDir}}
+kg link person:paul likes topic:ladybugdb --dir={{.KGDir}}
 ` + "```" + `
 
 ## Health Check

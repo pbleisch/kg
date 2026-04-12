@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 
-	"github.com/pbleisch/kg/pkg/store"
 	"github.com/spf13/cobra"
 )
 
@@ -13,11 +12,7 @@ func init() {
 		Short: "Show the kg version",
 		Args:  cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
-			v := version
-			if store.LadybugAvailable() {
-				v += " (ladybug)"
-			}
-			fmt.Println(v)
+			fmt.Println(version)
 		},
 	}
 	rootCmd.AddCommand(cmd)

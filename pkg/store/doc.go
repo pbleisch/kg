@@ -1,2 +1,2 @@
-// Package store handles YAML file I/O and Cayley index operations.
+// Package store handles YAML file I/O and LadybugDB index operations.
 package store

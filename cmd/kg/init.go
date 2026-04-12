@@ -33,8 +33,8 @@ func init() {
 # Entity YAML files are stored in entities/<type>/<id>.yaml
 # Schema files are stored in schema/<type>.yaml
 
-# Index backend: auto, bolt, or ladybug
-backend: auto
+# Index backend (only "ladybug" is supported)
+backend: ladybug
 
 # Embedding configuration (uncomment to enable)
 # Run 'kg embed --init' to scaffold a working setup automatically.

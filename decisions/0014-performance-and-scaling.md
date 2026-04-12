@@ -9,22 +9,21 @@ Authors: Paul
 
 Context
 -------
-As the graph grew, several O(N²) and O(N×E) hot paths became unacceptable. This decision records the concrete optimizations implemented to keep kg responsive at scale. Target: ≤100k entities on single-file BoltDB or LadybugDB.
+As the graph grew, several O(N²) and O(N×E) hot paths became unacceptable. This decision records the concrete optimizations implemented to keep kg responsive at scale. Target: ≤100k entities on LadybugDB.
 
 Decision
 --------
 
 ### Index Operations
 
-- **Index-based merge** — `merge.go` replaced `ListEntities()` (full YAML walk) with `FindReferrers()`, which does a BoltDB OPS prefix seek or Cypher query. Merge went from O(N×E) to O(1) index lookup per entity.
-- **Batch BoltDB writes during sync** — `SyncWithResult` collects all changes during walk, then batch-writes via `UpsertEntities` / `RemoveEntities` in single transactions. `UpsertEntity` combines remove+add in one `db.Update()` (was two separate transactions with two fsyncs each).
+- **Index-based merge** — `merge.go` replaced `ListEntities()` (full YAML walk) with `FindReferrers()`, which does a Cypher query on the LadybugDB index. Merge went from O(N×E) to O(1) index lookup per entity.
+- **Batch writes during sync** — `SyncWithResult` collects all changes during walk, then batch-writes via `UpsertEntities` / `RemoveEntities` in single transactions.
 - **Batch dedup embeddings** — Dedup loop replaced per-entity `RunEmbedSingle()` (spawns python per entity, ~1-2s each) with a pre-scan of the manifest and a single `RunEmbedBatch()` call. 100 entities: ~200s → ~3s.
-- **Stats from index** — `kg stats` replaced full YAML scan with `StatsProvider` interface: bolt scans SPO bucket once, ladybug uses Cypher aggregation. Sub-millisecond via daemon RPC.
+- **Stats from index** — `kg stats` replaced full YAML scan with `StatsProvider` interface backed by Cypher aggregation. Sub-millisecond via daemon RPC.
 
 ### Similarity Search
 
-- **BoltDB VectorSearcher** — Implemented brute-force cosine similarity over bolt index (FindByType + GetEntity + CosineSimilarity). Replaces O(N²) YAML scan fallback. Adequate for current scale; proper ANN would need an HNSW library.
-- **HNSW vector index (LadybugDB)** — `SimilarEntities` rewritten with HNSW vector extension. O(log N) approximate nearest neighbor instead of O(N) brute scan. Top-5 similar: ~1.2s → ~12ms (100× faster).
+- **HNSW vector index** — `SimilarEntities` uses LadybugDB's HNSW vector extension. O(log N) approximate nearest neighbor instead of O(N) brute scan. Top-5 similar: ~1.2s → ~12ms (100× faster).
 
 ### Daemon
 
@@ -38,8 +37,8 @@ Decision
 Consequences
 ------------
 - All common operations are sub-second for graphs up to ~13k entities.
-- Batch writes and daemon caching reduce fsync pressure on BoltDB.
-- HNSW in LadybugDB makes similarity search viable at scale; BoltDB brute-force remains a simpler fallback.
+- Daemon caching keeps the index hot and eliminates repeated open/close overhead.
+- HNSW in LadybugDB makes similarity search viable at scale.
 - May require rework (sharding, streaming) for very large graphs (>100k entities).
 
 Related Decisions

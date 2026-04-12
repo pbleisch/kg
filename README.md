@@ -27,77 +27,46 @@ kg back project:kg
 
 ### macOS and Linux
 
-**`kg`** — pure Go, no dependencies:
-
 ```bash
 VER=$(curl -fsSL https://api.github.com/repos/pbleisch/kg/releases/latest \
   | grep '"tag_name"' | cut -d'"' -f4) && \
 OS=$(uname -s | tr '[:upper:]' '[:lower:]') && \
 ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && \
 curl -fsSL "https://github.com/pbleisch/kg/releases/download/${VER}/kg_${VER}_${OS}_${ARCH}.tar.gz" \
-  | tar xzf - kg && sudo mv kg /usr/local/bin/
-```
-
-**`kg-ladybug`** — includes the [LadybugDB](https://ladybugdb.com) backend
-(native library bundled, no separate install needed):
-
-```bash
-VER=$(curl -fsSL https://api.github.com/repos/pbleisch/kg/releases/latest \
-  | grep '"tag_name"' | cut -d'"' -f4) && \
-OS=$(uname -s | tr '[:upper:]' '[:lower:]') && \
-ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && \
-curl -fsSL "https://github.com/pbleisch/kg/releases/download/${VER}/kg-ladybug_${VER}_${OS}_${ARCH}.tar.gz" \
   | sudo tar xzf - -C /usr/local/bin
 ```
 
-The `kg-ladybug` archive contains the binary and a `lib-ladybug/` directory.
-Extracting them together keeps the native library discoverable at runtime.
-If you later move only the binary, copy `lib-ladybug/` alongside it or install
-the library system-wide (`sudo cp lib-ladybug/liblbug.* /usr/local/lib/ && sudo ldconfig`).
+The release archive contains the binary and a `lib-ladybug/` directory with
+the [LadybugDB](https://ladybugdb.com) native library (bundled, no separate
+install needed). Extracting them together keeps the native library discoverable
+at runtime. If you later move only the binary, copy `lib-ladybug/` alongside
+it or install the library system-wide
+(`sudo cp lib-ladybug/liblbug.* /usr/local/lib/ && sudo ldconfig`).
 
 ### Windows
-
-**`kg`** (PowerShell):
 
 ```powershell
 $ver = (Invoke-RestMethod https://api.github.com/repos/pbleisch/kg/releases/latest).tag_name
 Invoke-WebRequest "https://github.com/pbleisch/kg/releases/download/$ver/kg_${ver}_windows_amd64.zip" `
   -OutFile kg.zip
 Expand-Archive kg.zip . -Force; Remove-Item kg.zip
-# Move kg.exe to a directory in your PATH
-```
-
-**`kg-ladybug`** (PowerShell):
-
-```powershell
-$ver = (Invoke-RestMethod https://api.github.com/repos/pbleisch/kg/releases/latest).tag_name
-Invoke-WebRequest "https://github.com/pbleisch/kg/releases/download/$ver/kg-ladybug_${ver}_windows_amd64.zip" `
-  -OutFile kg-ladybug.zip
-Expand-Archive kg-ladybug.zip . -Force; Remove-Item kg-ladybug.zip
-# Move kg-ladybug.exe and lbug_shared.dll to the same directory in your PATH
+# Move kg.exe and lbug_shared.dll to the same directory in your PATH
 ```
 
 ### From source
 
-**`kg`** (pure Go):
+Requires CGO and a C compiler (for LadybugDB native bindings):
 
 ```bash
 git clone https://github.com/pbleisch/kg.git
 cd kg
-mage build          # builds to bin/kg
-mage install        # installs to $GOPATH/bin
-```
-
-**`kg-ladybug`** (requires CGO and a C compiler):
-
-```bash
-mage ladybug:install  # downloads native lib if needed, builds, and installs
-                      # kg-ladybug + lib-ladybug/ to $GOPATH/bin/
+mage build          # builds to bin/kg (downloads native lib if needed)
+mage install        # installs kg + lib-ladybug/ to $GOPATH/bin
 ```
 
 The native library is downloaded automatically on first build to
 `lib-ladybug/` and installed alongside the binary in `$GOPATH/bin/lib-ladybug/`
-so the rpath resolves correctly. To build without installing: `mage ladybug:build`.
+so the rpath resolves correctly.
 
 ## Commands
 
@@ -181,7 +150,7 @@ the index directly. The daemon exits after 30 minutes of inactivity.
 
 - **Source of truth:** YAML files in `.kg/entities/<type>/<id>.yaml`
 - **Schemas:** YAML files in `.kg/schema/<type>.yaml`
-- **Index:** BoltDB or LadybugDB cache in `.kg/.cache/` (gitignored, rebuilt with `kg sync`)
+- **Index:** LadybugDB cache in `.kg/.cache/` (gitignored, rebuilt with `kg sync`)
 - **Config:** `.kg/config.yaml`
 
 The YAML files are designed to be committed to Git. The index is a local
@@ -189,15 +158,14 @@ cache that accelerates queries.
 
 ### Index Backend
 
-The index backend can be configured in `.kg/config.yaml`:
+The index backend is configured in `.kg/config.yaml`:
 
 ```yaml
-backend: auto  # auto (default), bolt, or ladybug
+backend: ladybug
 ```
 
-- **auto** — Uses LadybugDB if compiled in, otherwise BoltDB
-- **bolt** — BoltDB (pure Go, always available)
-- **ladybug** — LadybugDB (requires the `kg-ladybug` binary)
+LadybugDB is the only supported backend. The `backend:` field is retained
+for forward compatibility but only `ladybug` is accepted.
 
 When the daemon is running, CLI commands connect to it via RPC instead
 of opening the index file directly. This eliminates lock contention and
@@ -277,7 +245,9 @@ Recommended: use goreleaser which will build binaries and generate a changelog u
 goreleaser release --rm-dist
 ```
 
-This project publishes two related artifacts per release: a default pure-Go `kg` binary (no CGO, small and portable) and an optional `kg-ladybug` binary that is linked against the native LadybugDB libraries to enable the Ladybug index backend. CI is configured to build both artifacts within a single goreleaser pipeline so releases are produced together while still delivering two separate binaries for users to choose from. Shipping two artifacts keeps the default binary lightweight and maximizes portability for most users, while the Ladybug-enabled variant provides richer query capabilities for users who need it; see "Building with LadybugDB" below for runtime dependencies and build targets.
+The release produces a single `kg` binary linked against LadybugDB. The
+archive includes the binary and the `lib-ladybug/` native library directory.
+(`kg-ladybug` is a legacy alias — both binaries are identical.)
 
 Manual changelog generation (if not using goreleaser):
 
@@ -296,35 +266,34 @@ Notes on good release notes:
 - Exclude internal workflow noise — when generating notes manually, use the grep filter above.
 - Keep entries short and link to PRs or issues when helpful.
 
-### Building with LadybugDB
+### Building
 
 ```bash
-mage ladybug:build   # compile to bin/kg-ladybug (requires CGO + native libs)
-mage ladybug:test    # run tests with ladybug backend
-mage ladybug:check   # lint + test with ladybug
+mage build           # compile to bin/kg (requires CGO + native libs)
+mage test            # run tests
+mage check           # lint + test
 ```
 
 Requires Go 1.25+.
 
 ### Installing Ladybug native libraries
 
-Release archives for `kg-ladybug` already bundle the native library. When
-you extract the archive, the `lib-ladybug/` directory is placed next to the
-binary and the binary finds it automatically via its embedded rpath — no
-extra steps needed.
+Release archives already bundle the native library. When you extract the
+archive, the `lib-ladybug/` directory is placed next to the binary and the
+binary finds it automatically via its embedded rpath — no extra steps needed.
 
 ```
-kg-ladybug_vX.Y.Z_linux_amd64.tar.gz
-  kg-ladybug          ← binary
+kg_vX.Y.Z_linux_amd64.tar.gz
+  kg                   ← binary
   lib-ladybug/
-    liblbug.so        ← native lib, found automatically at runtime
+    liblbug.so         ← native lib, found automatically at runtime
 ```
 
 macOS and Windows archives follow the same layout (`.dylib` / `.dll`).
 
-**Only needed if you install the binary system-wide** (e.g., move
-`kg-ladybug` to `/usr/local/bin/` without `lib-ladybug/` beside it). In
-that case, copy the lib to a standard library path:
+**Only needed if you install the binary system-wide** (e.g., move `kg` to
+`/usr/local/bin/` without `lib-ladybug/` beside it). In that case, copy the
+lib to a standard library path:
 
 ```bash
 # Linux

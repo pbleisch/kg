@@ -4,6 +4,9 @@ Status: Proposed
 
 Date: 2026-02-01
 
+Updated: 2026-04 — BoltDB/Cayley has been superseded by LadybugDB as the
+sole index backend. See 0022-ladybug-index-backend.md.
+
 Authors: Paul
 
 Context

@@ -17,7 +17,7 @@ type GraphStats struct {
 }
 
 // Stats computes graph-level metrics. Uses the index when a StatsProvider
-// is available (bolt or ladybug), falling back to scanning YAML files.
+// is available, falling back to scanning YAML files.
 func Stats(kgDir string) (*GraphStats, error) {
 	if err := store.Sync(kgDir); err != nil {
 		return nil, fmt.Errorf("syncing index: %w", err)

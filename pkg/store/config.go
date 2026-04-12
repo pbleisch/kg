@@ -11,7 +11,7 @@ import (
 
 // Config holds settings from .kg/config.yaml.
 type Config struct {
-	Backend   string           `yaml:"backend"`             // "auto", "bolt", or "ladybug"
+	Backend   string           `yaml:"backend"`             // "ladybug" (only supported backend)
 	Embedding *EmbeddingConfig `yaml:"embedding,omitempty"` // optional embedding settings
 }
 
@@ -28,7 +28,7 @@ func LoadConfig(kgDir string) (*Config, error) {
 	data, err := os.ReadFile(filepath.Join(kgDir, "config.yaml"))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &Config{Backend: "auto"}, nil
+			return &Config{Backend: "ladybug"}, nil
 		}
 		return nil, fmt.Errorf("reading config: %w", err)
 	}
@@ -40,38 +40,51 @@ func LoadConfig(kgDir string) (*Config, error) {
 }
 
 // readBackendConfig reads the backend setting from .kg/config.yaml.
-// Returns "auto" if the file doesn't exist or the field is empty.
+// Returns "ladybug" always (only supported backend).
 func readBackendConfig(kgDir string) string {
 	data, err := os.ReadFile(filepath.Join(kgDir, "config.yaml"))
 	if err != nil {
-		return "auto"
+		return "ladybug"
 	}
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return "auto"
+		return "ladybug"
 	}
 	b := strings.TrimSpace(strings.ToLower(cfg.Backend))
-	if b == "" {
-		return "auto"
+	if b == "" || b == "auto" || b == "bolt" {
+		return "ladybug"
 	}
 	return b
 }
 
-// ActiveBackend returns the name of the backend that OpenIndex would select.
-func ActiveBackend(kgDir string) string {
-	backend := readBackendConfig(kgDir)
-	switch backend {
-	case "ladybug":
-		if ladybugAvailable {
-			return "ladybug"
+// ActiveBackend returns "ladybug" (the only supported backend).
+func ActiveBackend(_ string) string {
+	return "ladybug"
+}
+
+// openIndexDirect bypasses daemon detection in OpenIndex. Set to true by
+// the daemon process before opening its own index.
+var openIndexDirect bool
+
+// SetOpenIndexDirect enables or disables direct index opening, bypassing
+// daemon detection. The daemon process calls this before opening its own index.
+func SetOpenIndexDirect(v bool) { openIndexDirect = v }
+
+// OpenIndex opens or creates an index at <kgDir>/.cache/. Returns an Indexer
+// backed by LadybugDB.
+func OpenIndex(kgDir string) (Indexer, error) {
+	// If a daemon is serving this kgDir, connect via RPC instead of
+	// opening the index file directly. This eliminates lock contention.
+	if !openIndexDirect {
+		absDir, _ := filepath.Abs(kgDir)
+		sockPath := rpcSocketPath(absDir)
+		if DaemonAvailable(sockPath) {
+			return DialRemote(sockPath)
 		}
-		return "ladybug (unavailable)"
-	case "bolt":
-		return "bolt"
-	default:
-		if ladybugAvailable {
-			return "ladybug"
-		}
-		return "bolt"
+		// No daemon running — try to start one in the background.
+		// This command uses direct open; the NEXT command will use RPC.
+		autoStartDaemon(absDir)
 	}
+
+	return openLadybug(kgDir)
 }

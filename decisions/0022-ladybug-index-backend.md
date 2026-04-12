@@ -4,98 +4,74 @@ Status: Decided
 
 Date: 2025-07-14
 
+Updated: 2026-04
+
 Authors: Paul
 
 Context
 -------
-kg uses YAML files as the source of truth for all graph data. BoltDB
-serves as a disposable quad-style index (SPO/OPS buckets) that is
-rebuilt from YAML on demand. This architecture keeps the storage format
-human-readable and diff-friendly while still enabling fast lookups.
+kg uses YAML files as the source of truth for all graph data. The index
+is a disposable cache rebuilt from YAML on demand. This architecture keeps
+the storage format human-readable and diff-friendly while enabling fast
+lookups.
 
-BoltDB is pure Go and requires no CGO, which simplifies builds and
-cross-compilation. However, its key-value model limits query
-expressiveness — traversals, pattern matching, and multi-hop path
-queries must be implemented in application code.
-
-LadybugDB (formerly Kuzu) is an embedded property graph database with
-a Cypher query language. Go bindings are available at
-github.com/LadybugDB/go-ladybug but require CGO. LadybugDB offers a
+LadybugDB (formerly Kuzu) is an embedded property graph database with a
+Cypher query language. Go bindings are available at
+github.com/LadybugDB/go-ladybug and require CGO. LadybugDB offers a
 native graph data model with built-in support for pattern matching,
-variable-length path queries, and property filters — capabilities that
-would be expensive to reimplement on top of BoltDB.
+variable-length path queries, and property filters.
 
-We want richer query capabilities without losing the simple, portable,
-pure-Go default.
+Previously, BoltDB served as a pure-Go fallback backend that required no
+CGO. As of 2026-04, LadybugDB is the sole backend — the BoltDB backend
+and the dual-binary strategy have been removed.
 
 Decision
 --------
-Introduce a `store.Indexer` interface (already done) with two
-implementations:
+Use LadybugDB as the only index backend behind the `store.Indexer`
+interface.
 
-- **boltIndex** — pure Go, default backend. Uses the existing SPO/OPS
-  bucket layout. No CGO required.
-- **ladybugIndex** — CGO-required, opt-in backend. Maps kg entities and
-  relations to LadybugDB's native property graph model and exposes
-  Cypher query support.
+### Build requirements
 
-### Build tags
-
-Use Go build tags to gate the CGO backend:
-
-    //go:build ladybug
-
-The default build includes BoltDB only. Building with
-`-tags ladybug` compiles in the LadybugDB backend.
+All builds require CGO and the LadybugDB native library. The `kg` binary
+ships with the native library bundled in `lib-ladybug/`.
 
 ### Runtime backend selection
 
-Backend selection at runtime follows this order:
+The `backend:` field in `.kg/config.yaml` is retained for forward
+compatibility but only `ladybug` is accepted. Legacy values (`auto`,
+`bolt`) are treated as `ladybug`.
 
-1. Explicit override in `.kg/config.yaml` (`index.backend: ladybug` or
-   `index.backend: bolt`).
-2. Auto-detect: prefer LadybugDB if compiled in, otherwise fall back to
-   BoltDB.
+### Binary variants (superseded)
 
-### Binary variants
-
-Ship two binary variants via goreleaser:
-
-- `kg` — pure Go, BoltDB only. Portable, no CGO.
-- `kg-ladybug` — compiled with `-tags ladybug`. Requires CGO and
-  LadybugDB shared libraries.
+The previous dual-binary strategy (`kg` pure-Go + `kg-ladybug` with CGO)
+is no longer used. A single `kg` binary is produced, linked against
+LadybugDB. The `kg-ladybug` name is retained as a legacy alias.
 
 ### Source of truth unchanged
 
-YAML remains the sole source of truth. Both backends are disposable
-caches rebuilt from YAML via `kg reindex`. Switching backends requires
-only a reindex, not a data migration.
+YAML remains the sole source of truth. The LadybugDB index is a disposable
+cache rebuilt from YAML via `kg reindex`. No data migration is needed.
 
 Consequences
 ------------
 - **Positive:** Richer graph queries via Cypher — pattern matching,
-  variable-length paths, and property filters become first-class.
+  variable-length paths, and property filters are first-class.
 - **Positive:** Native property graph model aligns naturally with kg's
   entity/relation semantics.
-- **Positive:** No breaking changes — the default build is unchanged
-  and remains pure Go.
+- **Positive:** Simpler build and release pipeline — one binary, one backend.
 - **Positive:** Future extensibility — additional index backends can
   implement the same `store.Indexer` interface.
-- **Negative:** CGO complicates cross-compilation and CI for the
-  ladybug variant.
-- **Negative:** LadybugDB Go bindings are young (7 GitHub stars),
-  carrying ecosystem risk.
-- **Neutral:** Requires goreleaser dual-build configuration to produce
-  both binary variants.
+- **Negative:** CGO is now required for all builds, complicating
+  cross-compilation.
+- **Negative:** LadybugDB Go bindings are young, carrying ecosystem risk.
 
 Alternatives Considered
 -----------------------
-- **Full replacement of BoltDB with LadybugDB:** Rejected because
-  requiring CGO for all builds would break the portable pure-Go
-  default and complicate CI.
-- **Keep BoltDB only:** Rejected because it limits query
-  expressiveness, forcing complex graph traversals into application
-  code.
+- **Keep dual BoltDB + LadybugDB backends:** Rejected because maintaining
+  two backends added complexity with diminishing benefit — LadybugDB is
+  strictly more capable.
+- **Keep BoltDB only:** Rejected because it limits query expressiveness,
+  forcing complex graph traversals into application code.
 - **Use SQLite FTS instead:** Rejected because SQLite is a relational
   database with full-text search, not a graph database. It would not
   provide native graph traversal or Cypher-style pattern matching.

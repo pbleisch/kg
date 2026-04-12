@@ -6,7 +6,7 @@ A git-friendly knowledge graph system designed for LLM agents and CLI workflows.
 
 - **Git-friendly**: Source of truth is human-readable YAML files that diff and merge cleanly
 - **Agent-optimized**: Default output in TOON format minimizes tokens while maximizing LLM comprehension
-- **Fast queries**: Local Cayley/BoltDB index enables instant lookups without parsing files
+- **Fast queries**: Local LadybugDB index enables instant lookups without parsing files
 - **Simple mental model**: Entities have types, attributes, and relations to other entities
 - **Files as API**: Schemas and entities are just YAML files—agents can read and write them directly
 - **Three modes**: CLI for direct use, MCP for agent integration, daemon for performance
@@ -28,7 +28,7 @@ A git-friendly knowledge graph system designed for LLM agents and CLI workflows.
 │         │                                 │                 │
 │         ▼                                 ▼                 │
 │   ┌───────────┐                    ┌───────────┐           │
-│   │   YAML    │──────── sync ─────▶│  Cayley   │           │
+│   │   YAML    │──────── sync ─────▶│ LadybugDB │           │
 │   │  (truth)  │                    │  (index)  │           │
 │   └───────────┘                    └───────────┘           │
 │                                                             │
@@ -53,7 +53,7 @@ All writes go to YAML first, then sync to the index. All reads come from the ind
 ├── morphisms.yaml             # reusable path patterns
 ├── config.yaml
 └── .cache/                    # gitignored
-    ├── cayley.bolt            # BoltDB index
+    ├── ladybug/               # LadybugDB index
     └── manifest.json          # sync state
 ```
 
@@ -584,7 +584,7 @@ $ kg daemon status   # check if running
 
 Benefits:
 - Eliminates index open/close overhead per command
-- No BoltDB lock contention between concurrent commands
+- No index lock contention between concurrent commands
 - Watches YAML files for changes, auto-syncs index
 - Two Unix sockets per graph: control (`daemon.sock`) + RPC (`daemon-rpc.sock`)
 - One daemon per knowledge graph, isolated by `.kg` directory
@@ -671,7 +671,7 @@ Examples: `person:alice`, `project:atlas`, `team:platform`
 
 ## Sync Strategy
 
-The local index (Cayley/BoltDB) is a cache of the YAML source of truth.
+The local index (LadybugDB) is a cache of the YAML source of truth.
 
 ### Manifest Tracking
 
@@ -710,8 +710,8 @@ kg/
 ├── pkg/
 │   ├── store/
 │   │   ├── yaml.go           # YAML file operations
-│   │   ├── cayley.go         # Index operations
-│   │   └── sync.go           # YAML ↔ Cayley sync
+│   │   ├── ladybug.go        # Index operations
+│   │   └── sync.go           # YAML ↔ LadybugDB sync
 │   ├── query/
 │   │   ├── get.go
 │   │   ├── find.go
@@ -739,15 +739,17 @@ kg/
 
 | Dependency | Purpose |
 |------------|---------|
-| `github.com/cayleygraph/cayley` | Graph database/index |
+| `github.com/LadybugDB/go-ladybug` | Graph database/index |
 | `github.com/toon-format/toon-go` | TOON encoding |
 | `github.com/spf13/cobra` | CLI framework |
 | `gopkg.in/yaml.v3` | YAML parsing |
-| `go.etcd.io/bbolt` | BoltDB (via Cayley) |
 
-## Design Space: Quads and Labeled Facts
+## Design Space: Labeled Facts
 
-Cayley is a quad store, meaning each fact can have a fourth element—a label or "named graph"—that provides context. We're not yet using this capability, but it opens interesting possibilities.
+LadybugDB's property graph model can support labeled facts natively via
+edge properties. The concept is similar to RDF quads — each fact can carry
+additional context (provenance, confidence, temporal markers) as properties
+on the relationship.
 
 ### What Quads Enable
 
@@ -827,5 +829,5 @@ If you have a use case that needs quads, please document it.
 - **RDF/SPARQL**: Triple-store data model (simplified)
 - **Obsidian**: Local-first, markdown files as source of truth
 - **Logseq**: Graph-based knowledge management
-- **Cayley**: Google's graph database
+- **LadybugDB**: Embedded property graph database (formerly Kuzu)
 - **TOON**: Token-efficient serialization for LLMs

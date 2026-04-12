@@ -87,7 +87,7 @@ With body:
 ```bash
 git commit -m "feat: add kg find with attribute filters" \
   -m "Supports =, !=, ~, >, <, >=, <= operators.
-Reads from Cayley index. Falls back to scan if index stale.
+Reads from LadybugDB index. Falls back to scan if index stale.
 
 Closes kg-x7f"
 ```

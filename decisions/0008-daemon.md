@@ -10,7 +10,7 @@ Authors: Paul
 
 Context
 -------
-Opening the bolt/ladybug index on every CLI invocation adds latency. A background daemon can hold the index open, watch for YAML file changes, and serve queries over IPC — eliminating per-command open/close cost and keeping the index continuously fresh.
+Opening the index on every CLI invocation adds latency. A background daemon can hold the index open, watch for YAML file changes, and serve queries over IPC — eliminating per-command open/close cost and keeping the index continuously fresh.
 
 Decision
 --------
@@ -26,7 +26,7 @@ Socket paths: `<kgDir>/.cache/daemon.sock` and `<kgDir>/.cache/daemon-rpc.sock`.
 
 ### Index server model
 
-`OpenIndex(kgDir)` probes the daemon socket (100ms timeout). If a daemon is running, it returns a `remoteIndex` that proxies `Indexer`, `BatchIndexer`, `VectorSearcher`, and `StatsProvider` via RPC. If no daemon is available, it falls back to opening bolt/ladybug directly. `Sync()` is a no-op when the daemon is running since the daemon keeps the index fresh via file watcher.
+`OpenIndex(kgDir)` probes the daemon socket (100ms timeout). If a daemon is running, it returns a `remoteIndex` that proxies `Indexer`, `BatchIndexer`, `VectorSearcher`, and `StatsProvider` via RPC. If no daemon is available, it falls back to opening the LadybugDB index directly. `Sync()` is a no-op when the daemon is running since the daemon keeps the index fresh via file watcher.
 
 ### RPC service
 

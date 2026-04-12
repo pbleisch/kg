@@ -42,21 +42,7 @@ type FileEntry struct {
 }
 
 func manifestPath(kgDir string) string {
-	// Use a per-backend manifest so that switching between the bolt and
-	// ladybug binaries does not cause one backend's index to be seen as
-	// already-synced by the other (which would leave the new index empty).
-	backend := readBackendConfig(kgDir)
-	if backend == "auto" || backend == "" {
-		if ladybugAvailable {
-			backend = "ladybug"
-		} else {
-			backend = "bolt"
-		}
-	}
-	if backend == "ladybug" {
-		return filepath.Join(kgDir, ".cache", "manifest-ladybug.json")
-	}
-	return filepath.Join(kgDir, ".cache", "manifest.json")
+	return filepath.Join(kgDir, ".cache", "manifest-ladybug.json")
 }
 
 // LoadManifest reads the manifest from disk. Returns an empty manifest if the
@@ -338,11 +324,7 @@ func Rebuild(kgDir string) error {
 func RebuildWithResult(kgDir string) (*SyncResult, error) {
 	result := &SyncResult{}
 
-	// Remove old index files for both backends.
-	boltPath := filepath.Join(kgDir, ".cache", "cayley.bolt")
-	if err := os.Remove(boltPath); err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("removing bolt index: %w", err)
-	}
+	// Remove old index files.
 	ladybugDir := filepath.Join(kgDir, ".cache", "ladybug")
 	if err := os.RemoveAll(ladybugDir); err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("removing ladybug index: %w", err)

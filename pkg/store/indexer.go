@@ -51,6 +51,21 @@ type BatchIndexer interface {
 	RemoveEntities(ids []string) error
 }
 
+// IndexStats holds graph-level metrics computed from the index.
+type IndexStats struct {
+	TotalEntities int            `json:"total_entities"`
+	TotalLinks    int            `json:"total_links"`
+	TypeCounts    map[string]int `json:"type_counts"`
+	RelCounts     map[string]int `json:"relation_counts"`
+	Orphans       int            `json:"orphans"`
+}
+
+// StatsProvider is an optional interface for index backends that can compute
+// graph statistics directly from the index without parsing YAML files.
+type StatsProvider interface {
+	IndexStats() (*IndexStats, error)
+}
+
 // AttrFilter describes a single attribute filter for entity queries.
 type AttrFilter struct {
 	Attr  string `json:"attr"`

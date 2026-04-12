@@ -1,5 +1,3 @@
-//go:build ladybug
-
 package store
 
 import (

@@ -32,20 +32,31 @@ var (
 // Default target when running mage without arguments.
 var Default = Build
 
-// Build compiles the kg binary to bin/kg.
+// Build compiles the kg binary to bin/kg (requires LadybugDB native library).
 func Build() error {
-	return sh.RunV("go", "build", "-o", filepath.Join(binDir, binary), cmdPkg)
+	if err := ensureLbugLib(); err != nil {
+		return err
+	}
+	env := lbugCGOEnv()
+	return sh.RunWithV(env, "go", "build",
+		"-ldflags", "-s -w -X main.version=dev",
+		"-o", filepath.Join(binDir, binary), cmdPkg)
 }
 
 // Local builds and copies the binary to .kg/bin/kg-<os> for local testing.
 func Local() error {
 	mg.Deps(Build)
 	dir := filepath.Join(".kg", "bin")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	libDst := filepath.Join(dir, lbugLibDir)
+	if err := os.MkdirAll(libDst, 0o755); err != nil {
 		return err
 	}
 	dst := filepath.Join(dir, "kg-"+goOS)
 	if err := copyFile(filepath.Join(binDir, binary), dst); err != nil {
+		return err
+	}
+	libName := lbugLibName()
+	if err := copyFile(filepath.Join(lbugLibDir, libName), filepath.Join(libDst, libName)); err != nil {
 		return err
 	}
 	fmt.Printf("Installed to %s\n", dst)
@@ -54,22 +65,36 @@ func Local() error {
 
 // Test runs all tests.
 func Test() error {
-	return sh.RunV("go", "test", "./...", "-count=1")
+	if err := ensureLbugLib(); err != nil {
+		return err
+	}
+	env := mergeMaps(lbugTestEnv(), lbugCGOEnv())
+	return sh.RunWithV(env, "go", "test", "./...", "-count=1")
 }
 
 // TestRace runs tests with the race detector.
 func TestRace() error {
-	return sh.RunV("go", "test", "-race", "./...", "-count=1")
+	if err := ensureLbugLib(); err != nil {
+		return err
+	}
+	env := mergeMaps(lbugTestEnv(), lbugCGOEnv())
+	return sh.RunWithV(env, "go", "test", "-race", "./...", "-count=1")
 }
 
 // Lint runs go vet.
 func Lint() error {
-	return sh.RunV("go", "vet", "./...")
+	if err := ensureLbugLib(); err != nil {
+		return err
+	}
+	return sh.RunWithV(lbugCGOEnv(), "go", "vet", "./...")
 }
 
 // Install installs kg to GOPATH/bin.
 func Install() error {
-	return sh.RunV("go", "install", cmdPkg)
+	if err := ensureLbugLib(); err != nil {
+		return err
+	}
+	return sh.RunWithV(lbugCGOEnv(), "go", "install", cmdPkg)
 }
 
 // Clean removes build artifacts.
@@ -87,15 +112,20 @@ func Check() error {
 
 // Cover runs tests with coverage and generates coverage.html.
 func Cover() error {
-	if err := sh.RunV("go", "test", "./...", "-count=1", "-coverprofile=coverage.out"); err != nil {
+	if err := ensureLbugLib(); err != nil {
+		return err
+	}
+	env := mergeMaps(lbugTestEnv(), lbugCGOEnv())
+	if err := sh.RunWithV(env, "go", "test", "./...", "-count=1", "-coverprofile=coverage.out"); err != nil {
 		return err
 	}
 	return sh.RunV("go", "tool", "cover", "-html=coverage.out", "-o", "coverage.html")
 }
 
-// ─── LadybugDB targets ─────────────────────────────────────────────────────
+// ─── LadybugDB targets (aliases for backward compatibility) ─────────────────
 
-// Ladybug groups build targets that require the LadybugDB native library.
+// Ladybug groups build targets — now aliases to the standard targets since
+// LadybugDB is the only backend.
 type Ladybug mg.Namespace
 
 // Download downloads the LadybugDB native library to lib-ladybug/.
@@ -103,97 +133,24 @@ func (Ladybug) Download() error {
 	return ensureLbugLib()
 }
 
-// Build compiles kg-ladybug with CGO and the native library.
+// Build compiles kg (alias for the default Build target).
 func (Ladybug) Build() error {
-	if err := ensureLbugLib(); err != nil {
-		return err
-	}
-	env := lbugCGOEnv()
-	if err := sh.RunWithV(env, "go", "build", "-tags", "ladybug",
-		"-ldflags", "-s -w -X main.version=dev",
-		"-o", filepath.Join(binDir, binary+"-ladybug"), cmdPkg,
-	); err != nil {
-		return err
-	}
-	dstLib := filepath.Join(binDir, lbugLibDir)
-	if err := os.MkdirAll(dstLib, 0o755); err != nil {
-		return err
-	}
-	libName := lbugLibName()
-	if err := copyFile(filepath.Join(lbugLibDir, libName), filepath.Join(dstLib, libName)); err != nil {
-		return err
-	}
-	fmt.Printf("Built %s (lib → %s/%s)\n",
-		filepath.Join(binDir, binary+"-ladybug"), dstLib, libName)
-	return nil
+	return Build()
 }
 
-// Test runs tests with the ladybug backend.
+// Test runs tests (alias for the default Test target).
 func (Ladybug) Test() error {
-	if err := ensureLbugLib(); err != nil {
-		return err
-	}
-	env := mergeMaps(lbugTestEnv(), lbugCGOEnv())
-	return sh.RunWithV(env, "go", "test", "-tags", "ladybug", "./...", "-count=1")
+	return Test()
 }
 
-// Local builds kg-ladybug and copies it with the native lib to .kg/bin/.
+// Local builds and copies kg to .kg/bin/ (alias for the default Local target).
 func (Ladybug) Local() error {
-	lb := Ladybug{}
-	if err := lb.Build(); err != nil {
-		return err
-	}
-	dir := filepath.Join(".kg", "bin")
-	libDst := filepath.Join(dir, lbugLibDir)
-	if err := os.MkdirAll(libDst, 0o755); err != nil {
-		return err
-	}
-	bin := filepath.Join(dir, "kg-ladybug-"+goOS)
-	if err := copyFile(filepath.Join(binDir, binary+"-ladybug"), bin); err != nil {
-		return err
-	}
-	libName := lbugLibName()
-	if err := copyFile(filepath.Join(lbugLibDir, libName), filepath.Join(libDst, libName)); err != nil {
-		return err
-	}
-	fmt.Printf("Installed to %s\n", bin)
-	return nil
+	return Local()
 }
 
-// Install builds and installs kg-ladybug and the native lib to GOPATH/bin.
-func (Ladybug) Install() error {
-	lb := Ladybug{}
-	if err := lb.Build(); err != nil {
-		return err
-	}
-	gopath, err := sh.Output("go", "env", "GOPATH")
-	if err != nil {
-		return err
-	}
-	gopathBin := filepath.Join(gopath, "bin")
-	libDst := filepath.Join(gopathBin, lbugLibDir)
-	if err := os.MkdirAll(libDst, 0o755); err != nil {
-		return err
-	}
-	if err := copyFile(filepath.Join(binDir, binary+"-ladybug"), filepath.Join(gopathBin, "kg-ladybug")); err != nil {
-		return err
-	}
-	libName := lbugLibName()
-	if err := copyFile(filepath.Join(lbugLibDir, libName), filepath.Join(libDst, libName)); err != nil {
-		return err
-	}
-	fmt.Printf("Installed kg-ladybug to %s\n", gopathBin)
-	fmt.Printf("Installed lib to %s/%s\n", libDst, libName)
-	return nil
-}
-
-// Check runs lint then test with the ladybug backend.
+// Check runs lint then test (alias for the default Check target).
 func (Ladybug) Check() error {
-	if err := Lint(); err != nil {
-		return err
-	}
-	lb := Ladybug{}
-	return lb.Test()
+	return Check()
 }
 
 // ─── Ladybug helpers ────────────────────────────────────────────────────────

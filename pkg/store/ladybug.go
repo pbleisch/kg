@@ -1,5 +1,3 @@
-//go:build ladybug
-
 package store
 
 import (
@@ -12,11 +10,6 @@ import (
 
 	lbug "github.com/LadybugDB/go-ladybug"
 )
-
-const ladybugAvailable = true
-
-// LadybugAvailable reports whether this binary was built with LadybugDB support.
-func LadybugAvailable() bool { return true }
 
 type ladybugIndex struct {
 	db   *lbug.Database
@@ -325,7 +318,7 @@ func (idx *ladybugIndex) removeEmbeddings(id string) {
 
 // RemoveEntity deletes outgoing edges, clears the node to a stub, and
 // removes any associated embedding vectors from the HNSW sidecar table.
-// Incoming edges from other entities are preserved (matching BoltDB behavior).
+// Incoming edges from other entities are preserved.
 func (idx *ladybugIndex) RemoveEntity(id string) error {
 	// Delete outgoing relationships.
 	delStmt, err := idx.conn.Prepare(
@@ -843,6 +836,26 @@ func (idx *ladybugIndex) FindReferrers(id string) ([]string, error) {
 // UpsertEntity delegates to AddEntity which already uses MERGE (upsert).
 func (idx *ladybugIndex) UpsertEntity(e *Entity) error {
 	return idx.AddEntity(e)
+}
+
+// UpsertEntities batch-upserts multiple entities.
+func (idx *ladybugIndex) UpsertEntities(entities []*Entity) error {
+	for _, e := range entities {
+		if err := idx.AddEntity(e); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RemoveEntities batch-removes multiple entities by ID.
+func (idx *ladybugIndex) RemoveEntities(ids []string) error {
+	for _, id := range ids {
+		if err := idx.RemoveEntity(id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // IndexStats computes graph statistics via Cypher aggregation queries.

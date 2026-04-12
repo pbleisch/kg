@@ -219,12 +219,7 @@ func TestRebuild(t *testing.T) {
 	}
 
 	// Verify the index file/dir exists.
-	var dbPath string
-	if ladybugAvailable {
-		dbPath = filepath.Join(dir, ".cache", "ladybug")
-	} else {
-		dbPath = filepath.Join(dir, ".cache", "cayley.bolt")
-	}
+	dbPath := filepath.Join(dir, ".cache", "ladybug")
 	if _, err := os.Stat(dbPath); err != nil {
 		t.Fatalf("expected index at %s: %v", dbPath, err)
 	}

@@ -50,9 +50,9 @@ When multiple fields are specified, the backend computes similarity for each fie
 
 ### Implementation Notes
 
-- Only available when using the LadybugDB backend (`kg-ladybug`).
+- Only available when using the LadybugDB backend.
 - Requires backend support for vector storage and similarity search, including searching across multiple fields.
-- Fallback to error if used with BoltDB or if the backend does not support vector search.
+- Fallback to error if the backend does not support vector search.
 - Extend the backend interface to support these options, including iterating over multiple fields and selecting the best match per entity.
 - Support both direct vector input and file-based input for flexibility.
 
@@ -71,12 +71,11 @@ When multiple fields are specified, the backend computes similarity for each fie
 - Requires additional testing and documentation.
 
 **Neutral:**
-- No impact on default (BoltDB) users.
+- LadybugDB is the only backend; all users have vector search available.
 
 ## Alternatives Considered
 
 - Overloading `kg find` with vector options (less clear, more cluttered).
-- Implementing vector search in BoltDB (not feasible).
 - Relying on external tools for similarity search (less integrated).
 
 ---
