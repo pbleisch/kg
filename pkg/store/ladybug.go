@@ -850,7 +850,11 @@ func (idx *ladybugIndex) UpsertEntity(e *Entity) error {
 // to avoid per-entity auto-commit overhead (which triggers excessive
 // disk I/O and macOS CPU wake limits on large syncs).
 func (idx *ladybugIndex) UpsertEntities(entities []*Entity) error {
-	const chunkSize = 500
+	// Use large chunks (2500) with generous sleep (3s) between them.
+	// macOS enforces a limit of 45,000 CPU wakes per 300 seconds;
+	// each Cypher query triggers at least one wake, so we must spread
+	// the ~125K queries for 25K entities over enough time.
+	const chunkSize = 2500
 	for i := 0; i < len(entities); i += chunkSize {
 		end := i + chunkSize
 		if end > len(entities) {
@@ -859,9 +863,8 @@ func (idx *ladybugIndex) UpsertEntities(entities []*Entity) error {
 		if err := idx.upsertChunk(entities[i:end]); err != nil {
 			return err
 		}
-		// Throttle between chunks to avoid macOS CPU wake limits.
 		if end < len(entities) {
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(3 * time.Second)
 		}
 	}
 	return nil
@@ -942,7 +945,9 @@ func (idx *ladybugIndex) upsertChunk(entities []*Entity) error {
 			}
 		}
 
-		idx.upsertEmbeddings(e)
+		// Skip embeddings here — they use separate Prepare/Execute calls
+		// that break the active transaction. Embeddings are handled by
+		// syncEmbed() after the entity sync completes.
 	}
 
 	if _, err := idx.conn.Query("COMMIT"); err != nil {

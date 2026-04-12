@@ -330,7 +330,9 @@ func RebuildWithResult(kgDir string) (*SyncResult, error) {
 		return nil, fmt.Errorf("removing ladybug index: %w", err)
 	}
 
-	idx, err := OpenIndex(kgDir)
+	// Open index directly — bypass daemon detection/autostart since we just
+	// deleted the DB and need exclusive access for the rebuild.
+	idx, err := openLadybug(kgDir)
 	if err != nil {
 		return nil, fmt.Errorf("opening index: %w", err)
 	}
