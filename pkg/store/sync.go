@@ -85,8 +85,8 @@ func SaveManifest(kgDir string, m *Manifest) error {
 	return nil
 }
 
-// fileChecksum computes the SHA-256 hex digest of a file.
-func fileChecksum(path string) (string, error) {
+// FileChecksum computes the SHA-256 hex digest of a file.
+func FileChecksum(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
@@ -210,7 +210,7 @@ func SyncWithIndex(kgDir string, idx Indexer) (*SyncResult, error) {
 			}
 		}
 
-		checksum, err := fileChecksum(path)
+		checksum, err := FileChecksum(path)
 		if err != nil {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: checksum: %v", rel, err))
 			result.Skipped++
@@ -389,7 +389,7 @@ func RebuildWithResult(kgDir string) (*SyncResult, error) {
 			return nil
 		}
 
-		checksum, err := fileChecksum(path)
+		checksum, err := FileChecksum(path)
 		if err != nil {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: checksum: %v", path, err))
 			result.Skipped++
