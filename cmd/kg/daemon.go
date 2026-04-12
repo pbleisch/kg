@@ -23,12 +23,13 @@ func init() {
 			Use:   "start",
 			Short: "Start the daemon in the foreground",
 			RunE: func(cmd *cobra.Command, args []string) error {
-				d, err := daemon.Start(cfg.kgDir)
+				var opts []daemon.Option
+				if cfg.quiet {
+					opts = append(opts, daemon.WithQuiet())
+				}
+				d, err := daemon.Start(cfg.kgDir, opts...)
 				if err != nil {
 					return err
-				}
-				if !cfg.quiet {
-					fmt.Println("daemon started")
 				}
 
 				sig := make(chan os.Signal, 1)
@@ -40,9 +41,6 @@ func init() {
 				}
 
 				d.Stop()
-				if !cfg.quiet {
-					fmt.Println("daemon stopped")
-				}
 				return nil
 			},
 		},

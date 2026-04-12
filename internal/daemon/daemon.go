@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"net"
 	"net/rpc"
 	"os"
@@ -33,6 +35,7 @@ type Daemon struct {
 	rpcServer  *rpc.Server
 	service    *IndexService
 	watcher    *fsnotify.Watcher
+	log        *log.Logger
 	done         chan struct{}
 	wg           sync.WaitGroup
 	lastActivity atomic.Int64  // unix timestamp of last activity
@@ -42,6 +45,19 @@ type Daemon struct {
 	subMu       sync.Mutex
 	subscribers map[net.Conn]struct{}
 	entityCache map[string]*store.Entity
+}
+
+// Option configures a Daemon.
+type Option func(*Daemon)
+
+// WithLogger sets a custom logger. Default is log.Default() (writes to stderr).
+func WithLogger(l *log.Logger) Option {
+	return func(d *Daemon) { d.log = l }
+}
+
+// WithQuiet disables all logging output.
+func WithQuiet() Option {
+	return func(d *Daemon) { d.log = log.New(io.Discard, "", 0) }
 }
 
 // SocketPathFor returns the Unix socket path for the given kgDir.
@@ -63,7 +79,7 @@ func sha256Sum(s string) [32]byte {
 }
 
 // Start creates and starts a new Daemon for the knowledge graph at kgDir.
-func Start(kgDir string) (*Daemon, error) {
+func Start(kgDir string, opts ...Option) (*Daemon, error) {
 	absDir, err := filepath.Abs(kgDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve kg dir: %w", err)
@@ -146,17 +162,26 @@ func Start(kgDir string) (*Daemon, error) {
 		rpcServer:   rpcSrv,
 		service:     svc,
 		watcher:     watcher,
+		log:         log.New(os.Stdout, "daemon: ", log.Ltime),
 		done:        make(chan struct{}),
 		idleTimeout: DefaultIdleTimeout,
 		subscribers: make(map[net.Conn]struct{}),
 		entityCache: make(map[string]*store.Entity),
 	}
 
+	for _, o := range opts {
+		o(d)
+	}
+
+	// Share logger with the RPC service.
+	svc.log = d.log
+
 	// Pre-populate entity cache for diffing.
 	if entities, err := store.ListEntities(absDir); err == nil {
 		for _, e := range entities {
 			d.entityCache[e.ID] = e
 		}
+		d.log.Printf("cached %d entities", len(entities))
 	}
 
 	d.touch()
@@ -166,11 +191,14 @@ func Start(kgDir string) (*Daemon, error) {
 	go d.rpcAcceptLoop()
 	go d.idleLoop()
 
+	d.log.Printf("started (dir=%s, control=%s, rpc=%s)", absDir, sockPath, rpcSockPath)
+
 	return d, nil
 }
 
 // Stop shuts down the daemon gracefully.
 func (d *Daemon) Stop() error {
+	d.log.Printf("stopping")
 	close(d.done)
 	d.listener.Close()
 	d.rpcLn.Close()
@@ -178,16 +206,21 @@ func (d *Daemon) Stop() error {
 	d.wg.Wait()
 	// Close all subscriber connections.
 	d.subMu.Lock()
+	nSubs := len(d.subscribers)
 	for conn := range d.subscribers {
 		conn.Close()
 	}
 	d.subscribers = nil
 	d.subMu.Unlock()
+	if nSubs > 0 {
+		d.log.Printf("closed %d subscriber(s)", nSubs)
+	}
 	// Close the held-open index.
 	d.service.idx.Close()
 	os.Remove(d.socketPath)
 	os.Remove(d.rpcPath)
 	removePID(d.kgDir)
+	d.log.Printf("stopped")
 	return nil
 }
 
@@ -214,6 +247,7 @@ func (d *Daemon) idleLoop() {
 		case <-ticker.C:
 			last := d.lastActivity.Load()
 			if last > 0 && time.Since(time.Unix(last, 0)) > d.idleTimeout {
+				d.log.Printf("idle for %s, shutting down", d.idleTimeout)
 				go d.Stop()
 				return
 			}
@@ -261,6 +295,7 @@ func (d *Daemon) watchLoop() {
 			if !ok {
 				return
 			}
+			d.log.Printf("watch error")
 		}
 	}
 }
@@ -309,6 +344,7 @@ func (d *Daemon) handleConn(conn net.Conn) {
 	switch cmd {
 	case "stop":
 		d.touch()
+		d.log.Printf("stop requested")
 		conn.Write([]byte("stopping"))
 		conn.Close()
 		go d.Stop()
@@ -317,6 +353,7 @@ func (d *Daemon) handleConn(conn net.Conn) {
 		conn.Close()
 	case "subscribe":
 		d.touch()
+		d.log.Printf("subscriber connected")
 		d.addSubscriber(conn)
 		// Connection stays open; will be cleaned up on write failure or Stop.
 	default:
@@ -363,9 +400,11 @@ func (d *Daemon) broadcast(events []watch.Event) {
 
 func (d *Daemon) syncAndBroadcast() {
 	d.touch()
+	start := time.Now()
 	// Read current entities.
 	newEntities, err := store.ListEntities(d.kgDir)
 	if err != nil {
+		d.log.Printf("sync: list entities error: %v", err)
 		// Sync index using the held-open index.
 		d.service.mu.Lock()
 		store.SyncWithIndex(d.kgDir, d.service.idx) //nolint:errcheck
@@ -405,6 +444,8 @@ func (d *Daemon) syncAndBroadcast() {
 	d.service.mu.Lock()
 	store.SyncWithIndex(d.kgDir, d.service.idx) //nolint:errcheck
 	d.service.mu.Unlock()
+
+	d.log.Printf("sync: %d entities, %d events (%s)", len(newEntities), len(events), time.Since(start).Round(time.Millisecond))
 
 	// Broadcast to subscribers.
 	if len(events) > 0 {
