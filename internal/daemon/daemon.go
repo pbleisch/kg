@@ -50,8 +50,9 @@ type Daemon struct {
 	cacheMu     sync.RWMutex // guards entityCache
 	entityCache map[string]*store.Entity
 
-	pendingMu    sync.Mutex // guards pendingPaths
+	pendingMu    sync.Mutex // guards pendingPaths and newDirs
 	pendingPaths map[string]fsnotify.Op
+	newDirs      map[string]struct{} // dirs added during debounce; re-scanned on sync
 }
 
 // Option configures a Daemon.
@@ -175,6 +176,7 @@ func Start(kgDir string, opts ...Option) (*Daemon, error) {
 		subscribers: make(map[net.Conn]struct{}),
 		entityCache:  make(map[string]*store.Entity),
 		pendingPaths: make(map[string]fsnotify.Op),
+		newDirs:      make(map[string]struct{}),
 	}
 
 	for _, o := range opts {
@@ -278,10 +280,25 @@ func (d *Daemon) watchLoop() {
 			if !ok {
 				return
 			}
-			// Watch new subdirectories.
+			// Watch new subdirectories. The actual file scan happens
+			// when the debounce fires (syncChangedFiles) to avoid a
+			// race where kqueue misses events for files written
+			// between watcher.Add and the dir snapshot.
 			if event.Has(fsnotify.Create) {
 				if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
 					d.watcher.Add(event.Name)
+					d.pendingMu.Lock()
+					d.newDirs[event.Name] = struct{}{}
+					d.pendingMu.Unlock()
+					// Trigger debounce so syncChangedFiles re-scans
+					// this directory even if no individual file events
+					// arrive (macOS kqueue race).
+					if timer != nil {
+						timer.Stop()
+					}
+					timer = time.AfterFunc(debounceDelay, func() {
+						d.syncChangedFiles()
+					})
 				}
 			}
 			if !isYAML(event.Name) {
@@ -289,7 +306,7 @@ func (d *Daemon) watchLoop() {
 			}
 			// Accumulate changed paths during the debounce window.
 			d.pendingMu.Lock()
-			d.pendingPaths[event.Name] = event.Op
+			d.pendingPaths[event.Name] |= event.Op
 			d.pendingMu.Unlock()
 
 			if timer != nil {
@@ -412,11 +429,34 @@ func (d *Daemon) syncChangedFiles() {
 	d.touch()
 	start := time.Now()
 
-	// Drain pending paths.
+	// Drain pending paths and new directories.
 	d.pendingMu.Lock()
 	paths := d.pendingPaths
 	d.pendingPaths = make(map[string]fsnotify.Op, len(paths))
+	dirs := d.newDirs
+	d.newDirs = make(map[string]struct{}, len(dirs))
 	d.pendingMu.Unlock()
+
+	// Re-scan any directories added during this debounce window.
+	// On macOS (kqueue), file events can be missed when a file is
+	// written between watcher.Add and the directory snapshot.
+	for dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			child := filepath.Join(dir, entry.Name())
+			if isYAML(child) {
+				if _, exists := paths[child]; !exists {
+					paths[child] = fsnotify.Create
+				}
+			}
+		}
+	}
 
 	if len(paths) == 0 {
 		return

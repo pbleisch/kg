@@ -93,7 +93,7 @@ func TestFileChangeTriggerSync(t *testing.T) {
 	}
 
 	// Wait for debounce + sync to complete.
-	time.Sleep(2 * time.Second)
+	time.Sleep(3 * time.Second)
 
 	// Verify the entity is in the index.
 	idx, err := store.OpenIndex(kgDir)
