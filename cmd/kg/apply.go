@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/pbleisch/kg/pkg/command"
 	"github.com/pbleisch/kg/pkg/output"
@@ -508,22 +509,33 @@ func applyCreateDedup(a Action, dedupFields []string, threshold float64, dedupId
 		if vs, ok := dedupIdx.(store.VectorSearcher); ok {
 			bestScore := 0.0
 			bestID := ""
+			var mu sync.Mutex
+			var wg sync.WaitGroup
 			for _, field := range dedupFields {
 				qv, ok := queryVecs[field]
 				if !ok {
 					continue
 				}
-				results, err := vs.SimilarEntities(store.SimilarityParams{
-					TypeName: typeName,
-					Fields:   []string{field},
-					Vector:   qv,
-					TopN:     1,
-				})
-				if err == nil && len(results) > 0 && results[0].Score > bestScore {
-					bestScore = results[0].Score
-					bestID = results[0].Entity.ID
-				}
+				wg.Add(1)
+				go func(f string, v []float64) {
+					defer wg.Done()
+					results, err := vs.SimilarEntities(store.SimilarityParams{
+						TypeName: typeName,
+						Fields:   []string{f},
+						Vector:   v,
+						TopN:     1,
+					})
+					if err == nil && len(results) > 0 {
+						mu.Lock()
+						if results[0].Score > bestScore {
+							bestScore = results[0].Score
+							bestID = results[0].Entity.ID
+						}
+						mu.Unlock()
+					}
+				}(field, qv)
 			}
+			wg.Wait()
 			if bestScore >= threshold && bestID != "" && bestID != a.Entity.ID {
 				mergeOpts := command.MergeOptions{CrossType: true, Idx: dedupIdx}
 				if err := store.WriteEntity(cfg.kgDir, a.Entity); err != nil {

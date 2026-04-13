@@ -102,6 +102,20 @@ func SortResults(results []SimilarityResult) {
 	})
 }
 
+// EmbeddingLister is an optional capability for bulk-loading all stored
+// embeddings. Used by the daemon to populate an in-memory vector cache.
+type EmbeddingLister interface {
+	ListEmbeddings() ([]EmbeddingEntry, error)
+}
+
+// EmbeddingEntry is a single stored embedding vector.
+type EmbeddingEntry struct {
+	EntityID   string
+	EntityType string
+	Field      string
+	Vec        []float64
+}
+
 // ResolveVector extracts a vector from entity attributes for the given field.
 // Resolution order: field as-is → field+"_embedding". Returns the resolved
 // field name and vector, or empty/nil if no vector found.

@@ -54,6 +54,9 @@ type Daemon struct {
 	cacheMu     sync.RWMutex // guards entityCache
 	entityCache map[string]*store.Entity
 
+	vecCacheMu sync.RWMutex         // guards vecCache (separate from entity cache)
+	vecCache   map[string]vecEntry   // keyed by "entityID:field"; nil until loaded
+
 	pendingMu    sync.Mutex // guards pendingPaths and newDirs
 	pendingPaths map[string]fsnotify.Op
 	newDirs      map[string]struct{} // dirs added during debounce; re-scanned on sync
@@ -262,8 +265,9 @@ func Start(kgDir string, opts ...Option) (*Daemon, error) {
 		}
 	}
 
-	// Share logger with the RPC service.
+	// Share logger with the RPC service and give it a back-pointer.
 	svc.log = d.log
+	svc.daemon = d
 
 	// Pre-populate entity cache for diffing (strip embeddings to save memory).
 	if entities, err := store.ListEntities(absDir); err == nil {
@@ -273,6 +277,9 @@ func Start(kgDir string, opts ...Option) (*Daemon, error) {
 		}
 		d.log.Printf("cached %d entities", len(entities))
 	}
+
+	// Pre-populate in-memory vector cache from the index's EmbVec table.
+	d.loadVecCache()
 
 	d.touch()
 	d.wg.Add(4)
@@ -699,6 +706,14 @@ func (d *Daemon) syncChangedFiles() {
 		delete(d.entityCache, id)
 	}
 	d.cacheMu.Unlock()
+
+	// Incrementally update the in-memory vector cache.
+	if len(toUpsert) > 0 {
+		d.updateVecCacheUpsert(toUpsert)
+	}
+	if len(toRemoveIDs) > 0 {
+		d.updateVecCacheRemove(toRemoveIDs)
+	}
 
 	// Update manifest.
 	if manifest, err := store.LoadManifest(d.kgDir); err == nil {

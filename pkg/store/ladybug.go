@@ -25,8 +25,9 @@ type ladybugIndex struct {
 
 // Compile-time interface checks.
 var (
-	_ Indexer      = (*ladybugIndex)(nil)
-	_ BatchIndexer = (*ladybugIndex)(nil)
+	_ Indexer          = (*ladybugIndex)(nil)
+	_ BatchIndexer     = (*ladybugIndex)(nil)
+	_ EmbeddingLister  = (*ladybugIndex)(nil)
 )
 
 func openLadybug(kgDir string) (Indexer, error) {
@@ -337,6 +338,58 @@ func (idx *ladybugIndex) removeEmbeddings(id string) error {
 	return nil
 }
 
+// ListEmbeddings returns all stored embedding vectors from the EmbVec table.
+// Returns nil (not an error) when the vector extension or table is unavailable.
+func (idx *ladybugIndex) ListEmbeddings() ([]EmbeddingEntry, error) {
+	if !idx.vecExt || idx.embDim == 0 {
+		return nil, nil
+	}
+	r, err := idx.conn.Query(
+		"MATCH (v:EmbVec) RETURN v.entity_id, v.entity_type, v.field, v.vec",
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list embeddings: %w", err)
+	}
+	defer r.Close()
+
+	var entries []EmbeddingEntry
+	for r.HasNext() {
+		tuple, err := r.Next()
+		if err != nil {
+			continue
+		}
+		eidVal, _ := tuple.GetValue(0)
+		etypeVal, _ := tuple.GetValue(1)
+		fieldVal, _ := tuple.GetValue(2)
+		vecVal, _ := tuple.GetValue(3)
+		tuple.Close()
+
+		arr, ok := vecVal.([]any)
+		if !ok || len(arr) == 0 {
+			continue
+		}
+		vec := make([]float64, len(arr))
+		for i, v := range arr {
+			switch fv := v.(type) {
+			case float64:
+				vec[i] = fv
+			case float32:
+				vec[i] = float64(fv)
+			default:
+				continue
+			}
+		}
+
+		entries = append(entries, EmbeddingEntry{
+			EntityID:   fmt.Sprint(eidVal),
+			EntityType: fmt.Sprint(etypeVal),
+			Field:      fmt.Sprint(fieldVal),
+			Vec:        vec,
+		})
+	}
+	return entries, nil
+}
+
 // RemoveEntity deletes outgoing edges, clears the node to a stub, and
 // removes any associated embedding vectors from the HNSW sidecar table.
 // Incoming edges from other entities are preserved.
@@ -615,16 +668,36 @@ func (idx *ladybugIndex) SimilarEntities(params SimilarityParams) ([]SimilarityR
 // search. Over-queries by a factor to compensate for post-filtering by
 // entity_type and field, then refines with exact cosine similarity.
 func (idx *ladybugIndex) similarHNSW(params SimilarityParams) ([]SimilarityResult, error) {
-	// Over-query to account for type/field filtering.
 	k := params.TopN
 	if k <= 0 {
 		k = 100
 	}
-	fetchK := k * 20
-	if fetchK < 200 {
-		fetchK = 200
+	fetchK := k * 10
+	if fetchK < 50 {
+		fetchK = 50
 	}
 
+	results, err := idx.similarHNSWWithK(params, fetchK)
+	if err != nil {
+		return nil, err
+	}
+
+	// Retry with larger fetchK if post-filtering left too few results.
+	if params.TopN > 0 && len(results) < params.TopN {
+		results, err = idx.similarHNSWWithK(params, fetchK*4)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if params.TopN > 0 && len(results) > params.TopN {
+		results = results[:params.TopN]
+	}
+	return results, nil
+}
+
+// similarHNSWWithK executes a single HNSW query with the given fetchK.
+func (idx *ladybugIndex) similarHNSWWithK(params SimilarityParams, fetchK int) ([]SimilarityResult, error) {
 	// Build the field filter set for post-filtering.
 	fieldSet := make(map[string]bool, len(params.Fields)*2)
 	for _, f := range params.Fields {
@@ -704,9 +777,6 @@ func (idx *ladybugIndex) similarHNSW(params SimilarityParams) ([]SimilarityResul
 	}
 
 	SortResults(results)
-	if params.TopN > 0 && len(results) > params.TopN {
-		results = results[:params.TopN]
-	}
 	return results, nil
 }
 

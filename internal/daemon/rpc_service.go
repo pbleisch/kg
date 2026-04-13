@@ -20,6 +20,7 @@ type IndexService struct {
 	log        *log.Logger
 	activeRPCs sync.WaitGroup
 	draining   atomic.Bool
+	daemon     *Daemon // back-pointer for in-memory caches; nil-safe
 }
 
 // NewIndexService returns an IndexService backed by idx.
@@ -148,6 +149,18 @@ func (s *IndexService) SimilarEntities(args *SimilarArgs, reply *SimilarReply) e
 	}
 	defer s.activeRPCs.Done()
 	start := time.Now()
+
+	// Try in-memory vector cache first (no KuzuDB round-trip).
+	if s.daemon != nil {
+		if results, ok := s.daemon.similarFromCache(args.Params); ok {
+			reply.Results = results
+			s.log.Printf("rpc SimilarEntities(%s, top=%d) → %d results (%s) [vec-cache]",
+				args.Params.TypeName, args.Params.TopN, len(results), time.Since(start).Round(time.Microsecond))
+			return nil
+		}
+	}
+
+	// Fall through to index-backed search.
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	vs, ok := s.idx.(store.VectorSearcher)
