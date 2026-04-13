@@ -30,6 +30,7 @@ func (d *Daemon) loadVecCache() {
 		return
 	}
 	if len(entries) == 0 {
+		d.log.Printf("vec cache: no embeddings found in index")
 		return
 	}
 

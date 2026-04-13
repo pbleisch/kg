@@ -1058,6 +1058,15 @@ func (idx *ladybugIndex) upsertChunk(entities []*Entity) error {
 	if r != nil {
 		r.Close()
 	}
+
+	// Upsert embeddings outside the transaction (HNSW-indexed columns use
+	// separate Prepare/Execute calls that conflict with active transactions).
+	if idx.vecExt {
+		for _, e := range entities {
+			_ = idx.upsertEmbeddings(e) // best-effort; failures are non-fatal
+		}
+	}
+
 	return nil
 }
 
