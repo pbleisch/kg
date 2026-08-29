@@ -12,8 +12,13 @@ TOON, MCP) are explicitly *not* principles and may be discarded freely. It also 
 where the code currently violates its own principles. The nine principles are grouped
 into four areas — the graph on disk, the interface, the runtime, the record — so find
 the area your change lands on first: the principles in play are that group's two or
-three, not all nine. Read it before changing storage, the index, the write boundary, or
-the CLI surface; individual decisions live in `decisions/` as ADRs.
+three, not all nine. Read it before changing storage, the index, the write boundary, the
+library API, or the CLI surface; individual decisions live in `decisions/` as ADRs.
+
+P7 was revised on 2026-08-29: kg is a library with a **thin, complete** CLI over it. The
+CLI composes library calls and adds only presentation — it must not hold validation,
+defaults, or normalization the library lacks, and it must expose every operation the
+library does. Read P7 before adding behaviour under `cmd/`.
 
 Build and test require CGO and the LadybugDB native library (`mage build`; see
 [CONTRIBUTING.md](CONTRIBUTING.md)). **Verify locally — CI is not a usable signal.**

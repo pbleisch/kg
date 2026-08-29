@@ -29,7 +29,7 @@ two or three in that group, not all nine.
 | Area | Principles | What it governs | A change lands here when it… |
 |---|---|---|---|
 | **A. The graph on disk** | P1, P2, P3 | The bytes that *are* the knowledge: what a file contains, what belongs outside it, and what makes a set of files a valid graph rather than a pile | …changes the format, the layout, what is stored, or what a load is allowed to accept |
-| **B. The interface** | P5, P6, P7 | How other programs reach kg — what may be written in, what comes out, and how a caller invokes it at all | …changes a command, an output shape, a protocol, or the way a producer submits facts |
+| **B. The interface** | P5, P6, P7 | How other programs reach kg — what may be written in, what comes out, and how a caller reaches it at all, whether by linking it or by running it | …changes a command, an output shape, a protocol, an exported library signature, or the way a producer submits facts |
 | **C. The runtime** | P4, P8 | What has to be running, and what kg is allowed to run. kg owns no resident process and no model | …adds a daemon, a service dependency, an SDK, an API key, or a network call |
 | **D. The record** | P9 | How kg's own design decisions are captured, so a settled argument is not re-derived | …invalidates, supersedes, or quietly departs from a written decision |
 
@@ -48,7 +48,7 @@ nine, answering it means checking nine principles one at a time. By area:
 | Area | Does the proposal touch it? |
 |---|---|
 | **A. The graph on disk** | **Yes — entirely, and this is where the decision is made.** P1 is satisfied by construction: OKF's stated design goals restate it. P2 is satisfied trivially, there being no derived layer to misplace. **P3 is refused outright** — OKF §11 requires that consumers *"MUST NOT reject a bundle because of… broken cross-links"* and §6.1 that *"Consumers MUST tolerate broken links."* |
-| **B. The interface** | **No.** OKF ships no reader, validator, or query tool, so there is nothing for P5–P7 to bind to. kg's write boundary, output contract and process boundary survive the swap unchanged. |
+| **B. The interface** | **No.** OKF ships no reader, validator, or query tool, so there is nothing for P5–P7 to bind to. kg's write boundary, output contract and invocation contract survive the swap unchanged. |
 | **C. The runtime** | **No.** A format requires nothing running, so it satisfies P4 and P8 *vacuously* rather than being tested by them. Compatibility here is not evidence of fit. |
 | **D. The record** | **Only in the ordinary way.** Adopting it is a decision P9 requires be written down before it is load-bearing, and it answers open question 4. |
 
@@ -120,13 +120,19 @@ migration, not a `mv`.
 
 ## Area B — The interface: how other programs reach kg
 
-*What may be written in, what comes out, and how a caller invokes kg at all.* Three
+*What may be written in, what comes out, and how a caller reaches kg at all.* Three
 principles, one for each direction: P5 fixes the shape of what enters, P6 the shape of
-what leaves, P7 the mechanism in between. This is kg's least-contested ground — nothing
-comparable in the field offers a typed, enforced write boundary — and the only recorded
-violation here (#5) was committed by a consumer that skipped the boundary rather than by
-kg. P6 and P7 have no recorded violation, which is partly that they hold and partly that
-nothing has stressed them.
+what leaves, P7 who is allowed to reach either without changing language. This is kg's
+least-contested ground — nothing comparable in the field offers a typed, enforced write
+boundary — and the only recorded violation here (#5) was committed by a consumer that
+skipped the boundary rather than by kg. P6 and P7 have no recorded violation, which is
+partly that they hold and partly that nothing has stressed them.
+
+**P7 was revised on 2026-08-29**, on Paul's decision: kg becomes a library with a thin
+CLI over it. That is the one principle change this document has carried, and it did not
+overturn its neighbours — it forced them to be more specific. With two ways in, P5 has
+to say which side of the library the write boundary sits on, and P6 has to say which
+exit determinism is a property of. Both clarifications are marked below.
 
 ### P5 — Every write crosses a typed boundary
 
@@ -135,9 +141,19 @@ structured records — typed fields, versioned envelope, an idempotency key for 
 so that a malformed producer fails at the boundary instead of writing nonsense that
 validates.
 
+**There is one such boundary, and P7 puts it in the library.** The manifest, the CLI and
+the MCP tools are producers that enter through it, not boundaries of their own. A Go
+caller gets the *typed* half from the compiler — a struct literal is more typed than a
+manifest, not less — but the compiler supplies neither the versioned envelope nor the
+idempotency key, and those were always the parts doing the work. They have to be in the
+API's signature, refused at compile time, rather than assumed of a caller who now has no
+parser standing between them and the store.
+
 **Check.** No code path constructs an entity by string-splitting a command. Feed the
 write boundary a record with an unknown field and it is rejected, not stored. Apply the
-same batch twice and the graph is unchanged the second time.
+same batch twice and the graph is unchanged the second time. Nothing reachable from the
+library writes an entity without crossing the same boundary the manifest path crosses,
+and no exported signature lets a caller write without supplying the envelope.
 
 **Cost.** Producers must emit structured data. The convenient shortcut — prompting a
 model for CLI text and scraping it — is exactly what this forbids, and it is genuinely
@@ -150,28 +166,73 @@ The default output is for a program, not a terminal: structured, complete, stabl
 order, token-efficient. Human formatting is a flag, not the baseline. Errors are
 structured too — a machine-readable code, a message, and where possible a suggestion.
 
+**Determinism binds the library, not the printer.** P7 gives results two exits, and "by
+construction" means the order is already fixed when a result leaves the library; the CLI
+inherits it and adds only presentation. A CLI that sorts on its own way out satisfies
+every check below except the last one, and hands a linking caller a different answer.
+
 **Check.** Run the same query twice on unchanged data and the bytes are identical. Pipe
 any command's output into a parser without a regex. Trigger every error class and get
-back structure, not prose on stderr.
+back structure, not prose on stderr. The same query answered through the library and
+through the CLI's machine format carries the same records in the same order.
 
 **Cost.** No per-caller output tuning and no adaptive prettiness. Deterministic ordering
-constrains internal data structures — maps must be sorted on the way out, everywhere,
-forever.
+constrains internal data structures — maps must be sorted before a result leaves the
+library, everywhere, forever.
 
-### P7 — The integration boundary is a process, not a library
+### P7 — No consumer is required to share kg's language
 
-Consumers reach kg by running it: a binary on `PATH`, or a stdio protocol. They do not
-link it, do not share its memory, and are not required to share its language. This is
-why the only real consumer to date, written in Python and Node, could use a Go tool at
-all.
+**kg is a library, and the CLI is a thin, complete cover over it.** Behaviour lives in
+the library. A Go consumer links it; every other consumer runs it — a binary on `PATH`,
+or a stdio protocol — and that path is not a reduced one. The guarantee is not the
+process boundary. The process boundary was the *means*; the guarantee is that no
+consumer is ever **required** to link kg, share its memory, or match its runtime. That
+is why the only real consumer to date, written in Python and Node, could use a Go tool
+at all, and it has to stay true now that a Go caller has a shorter route.
 
-**Check.** A consumer in a language kg is not written in can perform every supported
-operation using only a binary and a pipe. Nothing in the contract requires an FFI, a
-shared object, or a matching runtime.
+**"Thin" is a rule, not an adjective.** The CLI parses arguments, calls the library, and
+formats the result. It does not validate what the library does not validate, does not
+apply a default the library does not apply, and does not normalize an input the library
+accepts as it stands. The failure this forbids is not an ugly CLI; it is a CLI that
+accumulates behaviour of its own until two consumers of the same graph — one linking,
+one invoking — disagree about what that graph contains, with neither able to see the
+disagreement.
 
-**Cost.** Process startup and serialization on every call, which tightens P4's budget
-rather than relaxing it. No shared in-memory state between calls, so anything expensive
-to construct must be either cheap enough to rebuild or persisted as derived state (P2).
+**Check.** *Language independence:* a consumer in a language kg is not written in can
+perform every supported operation using only a binary and a pipe; nothing in the
+contract requires an FFI, a shared object, or a matching runtime. *Completeness:* every
+operation the library exports is reachable from the CLI — a library that can do things
+the CLI cannot re-creates precisely the exclusion this principle exists to prevent, and
+is the way the guarantee is most likely to be lost. *Thinness:* the same inputs applied
+through the library and through the CLI leave a byte-identical graph and produce
+byte-identical machine output, and the CLI layer holds no validation, defaulting, or
+normalization that is not a call into the library.
+
+**Cost.** Two public surfaces where there was one. The Go API acquires its own
+compatibility obligation — argv plus bytes on stdout was the whole contract before, and
+now every exported type and signature is contract too, breakable in a way that stops a
+caller compiling rather than merely surprising a script. And **the library path can hold
+state the CLI path cannot**: an open handle, a warm index, a graph resident across
+calls. That is a correctness hazard the process boundary made impossible by
+construction — a bug that reproduces in-process and not through the binary, or the
+reverse — and it is now maintained by discipline instead. Correctness has to be
+established at the library, with the CLI's agreement with it tested rather than assumed.
+
+**Why this was revisable at all.** The previous P7 forbade the library outright, and its
+own cost paragraph carried the assumption that made that affordable: no shared in-memory
+state between calls, so *anything expensive to construct must be either cheap enough to
+rebuild or persisted as derived state (P2)*. That was written against a read path where
+construction was ruinous — a 1.34 GB index over 16 MB of content, 22 s warm and
+daemonless, 116 s cold (violation #2). Throwing that away on every call is a real cost,
+and a boundary that imposes it is worth promoting from *choice* to *principle* only
+because the alternative — letting expensive state leak into the contract — is worse. If
+the read path becomes the ~120-line cold walk the 2026 prior-art review measured, there
+is nothing expensive left to amortize and that argument largely evaporates, leaving the
+guarantee it was protecting, which is what P7 now states. **This is a principle that
+changed because the world underneath it changed, not because it became inconvenient** —
+and it rests on a number that is not settled yet. If open question 2 is answered
+"millions" rather than "~100k", construction becomes expensive again and the case for
+the old P7 comes back with it.
 
 ## Area C — The runtime: what has to be running
 
@@ -275,9 +336,9 @@ a decision is not a principle.
 | YAML | 0002 | "Plain, diffable, human-readable" (P1, area A) | JSON, TOML, Markdown + frontmatter |
 | One file per entity, `.kg/entities/<type>/<id>.yaml` | 0002, 0016 | "Independently addressable and diffable" (P1, area A) | Any layout that keeps entities separately diffable |
 | TOON | 0006 | "Machine-first, deterministic, token-efficient" (P6, area B) | JSON, NDJSON, anything stable and compact |
-| MCP | 0007 | "Language-agnostic process boundary" (P7, area B) | Any typed stdio protocol |
+| MCP | 0007 | "Full access without linking, from any language" (P7, area B) | Any typed stdio protocol |
 | snake_case normalization | 0016 | "IDs are stable and filesystem-safe" (P3, area A) | Any rule that is total, reversible, and enforced |
-| Go, cobra, the ~30-command CLI shape | 0010, 0004 | P7, area B | Any language producing a runnable binary |
+| Go, cobra, the ~30-command CLI shape | 0010, 0004 | P7, area B. The command *count* is a choice; the CLI's **coverage** of the library is not | Any language that can be both linked and run |
 | Morphism DSL (`kg morph`) | 0005 | Nothing. A feature. | Deletion |
 | 384-dim all-MiniLM embeddings, cosine, HNSW | 0024, 0014 | "Semantic search exists" | Any embedding, any metric, brute force |
 | Optimistic concurrency, no locks, no auto-commit | 0009 | "Git is the concurrency model" (P1, area A) | Locks, if single-writer stops holding |
@@ -338,7 +399,9 @@ regrouping is not licence to add, remove, or soften a principle.
    corpus is 27k and walks cold in under a second once derived data is evicted. If the
    ceiling is ~100k, reading everything is a legitimate architecture and most of the
    index disappears. If the ambition is millions, P4 needs rewriting first. These are
-   different systems; pick one.
+   different systems; pick one. **P7's revision now leans on this answer too**: the case
+   for a library rests on construction being cheap enough that nothing needs amortizing
+   across calls, and at millions it is not.
 
 3. **Where does identity live — in the file or in the path?** Both are defensible. A
    slug in the file makes renames free and collisions detectable. A path-derived ID
@@ -378,6 +441,10 @@ regrouping is not licence to add, remove, or soften a principle.
    the interface carries none. Whether compatibility is a missing principle or a
    deliberately withheld one is undecided, and question 5 is the first place the absence
    bites: an export path with no stability guarantee is not an answer to bulk extraction.
+   **P7's revision sharpens this question rather than answering it.** There are now two
+   surfaces to promise about, not one, and P7's cost paragraph names the Go API's
+   compatibility obligation without attaching a horizon to it — which is exactly the
+   missing promise, now owed twice.
 
 9. **No area governs provenance or trust.** Nothing here says where a fact came from, who
    or what asserted it, how well corroborated it is, or when it goes stale. In a flat list
@@ -394,3 +461,12 @@ regrouping is not licence to add, remove, or soften a principle.
 *Written 2026-08-29 against `dcafd83`; regrouped by area the same day, with the nine
 principles, their numbers, checks and costs unchanged. Corpus measurements are from the
 GDKB/kg state investigation of the same date.*
+
+***P7 revised 2026-08-29***, on Paul's decision — *"I like the library plus CLI model.
+Feels more useful."* — from **the integration boundary is a process, not a library** to
+**no consumer is required to share kg's language**. The old statement's last clause was
+already the real principle; the process boundary was how it was kept. P5 and P6 carry
+clarifications forced by that change and are otherwise unaltered. The other six
+principles, all nine numbers, and the four areas are unchanged. Area A's serialization
+question is untouched by this and remains open (question 4). *P9 wants this in
+`decisions/` as well; that ADR is owed and not yet written.*
