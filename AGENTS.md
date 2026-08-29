@@ -9,9 +9,11 @@
 [docs/PRINCIPLES.md](docs/PRINCIPLES.md) records the properties any rewrite of kg must
 preserve, what each costs, and which current choices (LadybugDB, the daemon, YAML,
 TOON, MCP) are explicitly *not* principles and may be discarded freely. It also lists
-where the code currently violates its own principles. Read it before changing storage,
-the index, the write boundary, or the CLI surface; individual decisions live in
-`decisions/` as ADRs.
+where the code currently violates its own principles. The nine principles are grouped
+into four areas — the graph on disk, the interface, the runtime, the record — so find
+the area your change lands on first: the principles in play are that group's two or
+three, not all nine. Read it before changing storage, the index, the write boundary, or
+the CLI surface; individual decisions live in `decisions/` as ADRs.
 
 Build and test require CGO and the LadybugDB native library (`mage build`; see
 [CONTRIBUTING.md](CONTRIBUTING.md)). **Verify locally — CI is not a usable signal.**
