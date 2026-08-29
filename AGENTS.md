@@ -4,6 +4,21 @@
 > coding agents (GitHub Copilot, Claude, etc.) that work on this repository.
 > If you're a human contributor, see [CONTRIBUTING.md](CONTRIBUTING.md) instead.
 
+## Before a structural change
+
+[docs/PRINCIPLES.md](docs/PRINCIPLES.md) records the properties any rewrite of kg must
+preserve, what each costs, and which current choices (LadybugDB, the daemon, YAML,
+TOON, MCP) are explicitly *not* principles and may be discarded freely. It also lists
+where the code currently violates its own principles. Read it before changing storage,
+the index, the write boundary, or the CLI surface; individual decisions live in
+`decisions/` as ADRs.
+
+Build and test require CGO and the LadybugDB native library (`mage build`; see
+[CONTRIBUTING.md](CONTRIBUTING.md)). **Verify locally — CI is not a usable signal.**
+Every run on `main` since v0.9.3 fails at the `Test` step (Linux-only; the suite passes
+on macOS), and as of 2026-08 GitHub Actions will not start jobs on this account at all
+for billing reasons.
+
 ## Landing the Plane (Session Completion)
 
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
@@ -27,3 +42,10 @@
 - NEVER stop before pushing - that leaves work stranded locally
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

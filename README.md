@@ -307,9 +307,14 @@ Or keep the extracted directory together and add it to `PATH` instead of
 moving the binary. For more options see the official Ladybug installation
 guide: https://docs.ladybugdb.com/installation/
 
-## Architecture Decisions
+## Principles and Architecture Decisions
 
-Design decisions are recorded in `decisions/` as lightweight ADRs. Key
+[docs/PRINCIPLES.md](docs/PRINCIPLES.md) records the properties any rewrite of kg
+must preserve, what each one costs, and — deliberately — which current choices are
+*not* principles and may be discarded freely. Read it before making a structural
+change.
+
+Individual design decisions are recorded in `decisions/` as lightweight ADRs. Key
 decisions include storage and indexing (0001), data model (0002), CLI
 grammar (0004), MCP server (0007), daemon (0008), agent integration
 (0021), and LadybugDB index backend (0022).
