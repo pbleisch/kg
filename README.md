@@ -319,6 +319,11 @@ decisions include storage and indexing (0001), data model (0002), CLI
 grammar (0004), MCP server (0007), daemon (0008), agent integration
 (0021), and LadybugDB index backend (0022).
 
+[docs/increments.md](docs/increments.md) is the plan: where kg and the GDKB ingestion
+pipeline go next, as numbered increments with a goal, deliverables and a checkable
+done-condition. It records what is deliberately *not* being built as carefully as what
+is, and it is edited as increments land.
+
 ## License
 
 See [LICENSE](LICENSE) for details.

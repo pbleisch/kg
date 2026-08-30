@@ -20,6 +20,12 @@ CLI composes library calls and adds only presentation — it must not hold valid
 defaults, or normalization the library lacks, and it must expose every operation the
 library does. Read P7 before adding behaviour under `cmd/`.
 
+[docs/increments.md](docs/increments.md) is the current plan — numbered increments with
+goals, deliverables and done-conditions, covering both kg and the GDKB ingestion
+pipeline, plus what is deliberately not being built and which increment forces each of
+PRINCIPLES.md's open questions. Read it before starting work that sounds like a
+milestone; it is edited as increments land, so it is a plan and not an ADR.
+
 Build and test require CGO and the LadybugDB native library (`mage build`; see
 [CONTRIBUTING.md](CONTRIBUTING.md)). **Verify locally — CI is not a usable signal.**
 Every run on `main` since v0.9.3 fails at the `Test` step (Linux-only; the suite passes
