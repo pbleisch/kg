@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/pbleisch/kg/pkg/store"
@@ -31,7 +32,12 @@ type Schema struct {
 }
 
 // ValidationError reports a single validation issue on a field.
+//
+// Every one of these is content, and content is advised, never enforced (P3):
+// a caller reports them and keeps going.  Code names the class so a caller can
+// branch on it rather than on the message (ADR-0018).
 type ValidationError struct {
+	Code    string
 	Field   string
 	Message string
 }
@@ -84,27 +90,51 @@ func ValidateEntity(schema *Schema, entity *store.Entity) []ValidationError {
 	var errs []ValidationError
 
 	// Check required attributes are present.
+	required := make([]string, 0, len(schema.Attributes))
 	for name, def := range schema.Attributes {
 		if def.Required {
-			val, ok := entity.Attributes[name]
-			if !ok || val == nil {
-				errs = append(errs, ValidationError{
-					Field:   "attributes." + name,
-					Message: "required attribute is missing",
-				})
-				continue
-			}
+			required = append(required, name)
+		}
+	}
+	sort.Strings(required)
+	for _, name := range required {
+		if val, ok := entity.Attributes[name]; !ok || val == nil {
+			errs = append(errs, ValidationError{
+				Code:    "missing_attribute",
+				Field:   "attributes." + name,
+				Message: "required attribute is missing",
+			})
 		}
 	}
 
-	// Check attribute types.
-	for name, val := range entity.Attributes {
-		def, ok := schema.Attributes[name]
-		if !ok || val == nil {
+	// Check the attributes that are present.  An attribute the schema says
+	// nothing about used to be skipped without a word, which is how 2,118
+	// entities carried an attribute named "--dir" while `kg validate` printed
+	// "all entities valid" (PRINCIPLES.md violation #4).  It is reported now,
+	// and it is still only a warning: a graph under construction is
+	// legitimately incomplete, and an open world is the intent.
+	present := make([]string, 0, len(entity.Attributes))
+	for name := range entity.Attributes {
+		present = append(present, name)
+	}
+	sort.Strings(present)
+	for _, name := range present {
+		val := entity.Attributes[name]
+		def, known := schema.Attributes[name]
+		if !known {
+			errs = append(errs, ValidationError{
+				Code:    "unknown_attribute",
+				Field:   "attributes." + name,
+				Message: fmt.Sprintf("is not in the %s schema", schema.Type),
+			})
+			continue
+		}
+		if val == nil {
 			continue
 		}
 		if !checkAttrType(def.Type, val) {
 			errs = append(errs, ValidationError{
+				Code:    "wrong_type",
 				Field:   "attributes." + name,
 				Message: fmt.Sprintf("expected type %s", def.Type),
 			})
@@ -112,13 +142,20 @@ func ValidateEntity(schema *Schema, entity *store.Entity) []ValidationError {
 	}
 
 	// Check cardinality constraints on relations.
-	for name, def := range schema.Relations {
+	rels := make([]string, 0, len(schema.Relations))
+	for name := range schema.Relations {
+		rels = append(rels, name)
+	}
+	sort.Strings(rels)
+	for _, name := range rels {
+		def := schema.Relations[name]
 		targets, ok := entity.Relations[name]
 		if !ok {
 			continue
 		}
 		if def.Cardinality == "one" && len(targets) > 1 {
 			errs = append(errs, ValidationError{
+				Code:    "cardinality",
 				Field:   "relations." + name,
 				Message: fmt.Sprintf("cardinality is one but found %d targets", len(targets)),
 			})

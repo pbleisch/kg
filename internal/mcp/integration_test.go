@@ -70,19 +70,19 @@ func setupKGDir(t *testing.T) string {
 
 	entities := map[string]string{
 		"entities/person/alice.yaml": `id: "person:alice"
-type: Person
+type: person
 attributes:
   name: Alice Chen
   role: Engineer
 `,
 		"entities/person/bob.yaml": `id: "person:bob"
-type: Person
+type: person
 attributes:
   name: Bob Smith
   role: Manager
 `,
 		"entities/project/atlas.yaml": `id: "project:atlas"
-type: Project
+type: project
 attributes:
   name: Atlas
   status: active
@@ -90,7 +90,7 @@ attributes:
 	}
 
 	schemas := map[string]string{
-		"schema/person.yaml": `type: Person
+		"schema/person.yaml": `type: person
 description: A person entity
 attributes:
   name:
@@ -100,7 +100,7 @@ attributes:
     type: string
 relations: {}
 `,
-		"schema/project.yaml": `type: Project
+		"schema/project.yaml": `type: project
 description: A project entity
 attributes:
   name:
@@ -280,7 +280,7 @@ func TestIntegrationKgFind(t *testing.T) {
 
 	resp := sendRPC(t, w, r, 1, "tools/call", map[string]any{
 		"name":      "kg_find",
-		"arguments": map[string]any{"type": "Person"},
+		"arguments": map[string]any{"type": "person"},
 	})
 	if resp.Error != nil {
 		t.Fatalf("unexpected error: %s", resp.Error.Message)
@@ -322,7 +322,7 @@ func TestIntegrationKgCreate(t *testing.T) {
 	resp := sendRPC(t, w, r, 1, "tools/call", map[string]any{
 		"name": "kg_create",
 		"arguments": map[string]any{
-			"type":     "Person",
+			"type":     "person",
 			"local_id": "charlie",
 			"attributes": map[string]string{
 				"name": "Charlie Brown",
@@ -452,7 +452,7 @@ func TestIntegrationKgTypes(t *testing.T) {
 	if len(types) != 2 {
 		t.Fatalf("expected 2 types, got %d: %v", len(types), types)
 	}
-	if types[0] != "Person" || types[1] != "Project" {
+	if types[0] != "person" || types[1] != "project" {
 		t.Fatalf("expected [Person, Project], got %v", types)
 	}
 
@@ -467,7 +467,7 @@ func TestIntegrationKgDescribe(t *testing.T) {
 
 	resp := sendRPC(t, w, r, 1, "tools/call", map[string]any{
 		"name":      "kg_describe",
-		"arguments": map[string]any{"type": "Person"},
+		"arguments": map[string]any{"type": "person"},
 	})
 	if resp.Error != nil {
 		t.Fatalf("unexpected error: %s", resp.Error.Message)
@@ -490,7 +490,7 @@ func TestIntegrationKgDescribe(t *testing.T) {
 	if err := json.Unmarshal([]byte(text), &result); err != nil {
 		t.Fatalf("unmarshal schema: %v", err)
 	}
-	if result.Type != "Person" {
+	if result.Type != "person" {
 		t.Fatalf("expected type 'Person', got %q", result.Type)
 	}
 	if len(result.Attributes) != 2 {

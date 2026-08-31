@@ -47,7 +47,7 @@ nine, answering it means checking nine principles one at a time. By area:
 
 | Area | Does the proposal touch it? |
 |---|---|
-| **A. The graph on disk** | **Yes — entirely, and this is where the decision is made.** P1 is satisfied by construction: OKF's stated design goals restate it. P2 is satisfied trivially, there being no derived layer to misplace. **P3 is refused outright** — OKF §11 requires that consumers *"MUST NOT reject a bundle because of… broken cross-links"* and §6.1 that *"Consumers MUST tolerate broken links."* |
+| **A. The graph on disk** | **Yes — entirely, and this is where the decision is made.** P1 is satisfied by construction: OKF's stated design goals restate it. P2 is satisfied trivially, there being no derived layer to misplace. P3 looked refused outright — OKF §11 requires that consumers *"MUST NOT reject a bundle because of… broken cross-links"* and §6.1 that *"Consumers MUST tolerate broken links."* **[ADR-0028](../decisions/0028-load-time-structural-enforcement.md) found the conflict is narrower than that**: it is only about broken links, kg's load reports rather than refuses them, and the strictness worth keeping — identity, and the typed write boundary — is untouched by the specification. The remaining disagreement is deliberate and stated (increment 7). |
 | **B. The interface** | **No.** OKF ships no reader, validator, or query tool, so there is nothing for P5–P7 to bind to. kg's write boundary, output contract and invocation contract survive the swap unchanged. |
 | **C. The runtime** | **No.** A format requires nothing running, so it satisfies P4 and P8 *vacuously* rather than being tested by them. Compatibility here is not evidence of fit. |
 | **D. The record** | **Only in the ordinary way.** Adopting it is a decision P9 requires be written down before it is load-bearing, and it answers open question 4. |
@@ -66,8 +66,9 @@ look.
 kg's storage position — plain files, derived data outside, portable without the tool —
 and a 2026 prior-art review found it is now also the industry's, published as a
 specification. Five of the nine recorded violations (#1, #3, #4, #6, #8) land here.
-**#1 and #8 were fixed in increment 3**; #3, #4 and #6 remain, so P3 is still violated
-and P1 still is on the atomicity of writes.
+**#1 and #8 were fixed in increment 3, #3 and #4 in increment 4**; #6 remains, so P1 is
+still violated on the atomicity of writes. P3 now holds in kg — the corpus that
+violated it is in another repository and is repaired there.
 
 ### P1 — The files are the graph, and a graph travels without the tool
 
@@ -105,18 +106,32 @@ every consumer needs a defined behaviour when it is absent.
 
 The two are not the same rule and must not share a setting. **Structural** invariants
 decide whether a fact is *reachable at all* — identity is unique, an entity's declared
-identity agrees with where it is stored, a relation points at something that exists.
-Those are hard failures that name the offending records. **Content** — which attributes
-exist, their types, cardinality — is advisory guidance for agents, reported and not
-blocking, because a graph under construction is legitimately incomplete.
+identity agrees with where it is stored, and its names are legal names. Those are hard
+failures that name the offending records. **Content** — which attributes exist, their
+types, cardinality, whether a relation target resolves — is advisory guidance for
+agents, reported and not blocking, because a graph under construction is legitimately
+incomplete.
+
+**The severity depends on the moment.** A producer is refused for what it asserts; a
+reader is not punished for what someone else deleted. So the *write boundary* also
+refuses a relation whose ends do not resolve — at submission the batch contains the
+edge and the producer can fix it — while a *load* reports one. That asymmetry is the
+one thing this principle used to be silent about, and being silent about it is how the
+repository came to carry two contradictory readings of the same rule.
+[ADR-0028](../decisions/0028-load-time-structural-enforcement.md) settles it and states
+the three classes in full.
 
 **Check.** Two files claiming one identity fail the load, naming both. A file whose
-declared identity disagrees with its location fails. A dangling relation target is
-reported. An unknown attribute is a warning, and a graph full of warnings still loads.
+declared identity disagrees with its location fails. An illegal attribute name fails.
+A dangling relation target is refused at the write boundary and **reported** by a load.
+An unknown attribute is a warning, and a graph full of warnings still loads.
 
 **Cost.** Ingestion that used to succeed now fails, and existing corpora will not load
-until they are repaired. Being strict about identity means a rename is a real
-migration, not a `mv`.
+until they are repaired — measured on GDKB, 2,533 of 27,158 files. Being strict about
+identity means a rename is a real migration, not a `mv`. And one read has to be exempt:
+a corpus that will not load must still be walkable by the tool that repairs it, so
+`store.ListEntityFiles` enforces nothing by design, and every whole-corpus rewrite has
+to use it rather than a load.
 
 ## Area B — The interface: how other programs reach kg
 
@@ -368,8 +383,8 @@ Every row is verified in this repository or measured on the one real corpus
 |---|---|---|---|
 | 1 | ~~**Embeddings are written into the entity files.**~~ **FIXED, increment 3.** | Was: `pkg/store/embed.go:199-201`, **643.5 MB of 659.6 MB (97.55%)** embedding floats against 16.2 MB of content; a re-embed rewrote 8,981 files. Now: vectors go to `.kg/.cache/vectors.bin`, gitignored. Migrating the real corpus moved 54,148 (entity, field) pairs into 53,630 sidecar rows and took the entity files to **14.92 MB** and the packed repository from 229 MB to **13 MB**. A model change now re-embeds every vector and leaves `git status` clean. | **P2**, held. ADR-0027; `docs/embedding.md` rewritten to match. |
 | 2 | ~~**The read path requires the daemon in practice.**~~ **FIXED, increment 3.** | The recorded 116 s cold was optimistic: re-measured on the same corpus it is **783.8 s**. Now, with no index and nothing running, `kg get` is **3–4 ms** cold, a whole-graph walk 0.82 s, `kg similar` 0.05–0.12 s. ADR-0026 has the table. The consumer scripts that bypassed kg no longer have a reason to. | **P4**, held. ADR-0008 and ADR-0022 superseded by ADR-0027. |
-| 3 | **Identity is derived from the ID but never enforced.** `EntityPath` computes the path from the ID; `walkEntities` reads whatever it finds and never checks for collisions. | `pkg/store/yaml.go:29`, `:104`. Measured: **265 duplicate IDs shadowing 265 files that no query can ever reach**, 162 files whose directory disagrees with their `type:`, 269 whose `id` ≠ `<dir>:<basename>`. `kg stats` reports 26,891 entities over 27,157 files and no one notices. Increment 3 added a second, independent count from the embedding pass: 54,148 (entity, field) pairs produce 53,630 sidecar rows, and `kg sync` now names the 534-pair collapse. It also found the sharper edge — a whole-corpus rewrite that writes to `EntityPath(id)` rather than to the file it read skips one file and overwrites another, which is why `store.ListEntityFiles` and `store.WriteEntityAt` exist. | **P3.** |
-| 4 | **Validation is silent about exactly what matters.** Unknown attributes are skipped; entities with no schema are skipped entirely; relation targets are never checked. | `pkg/schema/schema.go:103` (`if !ok \|\| val == nil { continue }`), `cmd/kg/validate.go:44`. Result: **2,118 entities (7.8%) carry an attribute literally named `--dir` with the value `.kg`** — a CLI flag that became knowledge — and `kg validate` prints "all entities valid". | **P3.** The open-world *content* rule is intended; the structural silence is not. |
+| 3 | ~~**Identity is derived from the ID but never enforced.**~~ **FIXED in kg, increment 4.** | Was: `EntityPath` computed the path from the ID and `walkEntities` read whatever it found, comparing them never. Measured on the corpus: **265 files whose `id` disagrees with `<dir>:<basename>`**, 162 whose directory disagrees with their `type:`, and **267 declared ids claimed by two files each, over 534 files** — the same 534 increment 3's embedding pass counted from the other side. Now: [ADR-0029](../decisions/0029-path-derived-identity.md) settles identity as **path-derived**, `id:`/`type:` are a checked echo, and a disagreement or a collision refuses the load naming every file. `kg validate --fix` repairs 2,528 of GDKB's 2,533 offending files in 1.8 s and **moves none** — the old `--fix` moved them to `EntityPath(id)`, which is the overwrite this row warned about, performed deliberately. | **P3**, held in kg. The GDKB repair is a separate change in a separate repository. |
+| 4 | ~~**Validation is silent about exactly what matters.**~~ **FIXED, increment 4.** | Was: unknown attributes skipped (`pkg/schema/schema.go`, `if !ok \|\| val == nil { continue }`), entities with no schema skipped entirely, relation targets never checked — so **2,118 entities (7.8%) carrying an attribute literally named `--dir` with the value `.kg`** drew "all entities valid". Now `kg validate` reports both halves separately and says which is which: on the unrepaired corpus, **2,550 structural errors and 7,343 advisories**, in under a second. The `--dir` attributes are a structural refusal, because the write boundary already refuses that name and a rule that binds on the way in and not on the way out is not a rule (ADR-0028). | **P3**, held. The open-world *content* rule is intended and is now reported rather than silent. |
 | 5 | **The corruption in #4 entered through an untyped write boundary.** A model was prompted to emit `kg create …` shell text; a pipeline regex-scraped it, `shlex`-split it, and treated "anything containing `=`" as an attribute. | The typed boundary already existed and was skipped: `cmd/kg/apply.go:18-36` defines a versioned manifest with an idempotency key, and the MCP tools take typed objects. | **P5**, violated by the consumer — but kg accepted the result without complaint (#4), which is kg's failure. |
 | 6 | **Writes to the source of truth are not atomic; writes to the disposable index are.** `WriteEntity` truncates in place with `os.WriteFile`. | `pkg/store/yaml.go:72`, against ADR-0008's temp-file → fsync → rename for the *manifest*. The durability care is on the artifact that can be rebuilt, not on the one that cannot. | **P1** — if the files are the graph, they deserve at least the index's care. |
 | 7 | **No code written after v0.9.3 has ever passed CI, and CI cannot run at all right now.** | Two separate faults. (a) The last green run on `main` is the v0.9.3 commit; the **ten runs since then all failed at the `Test` step** — checkout, ladybug download and `go vet` all pass, tests fail, everything after is skipped. Run logs have expired (HTTP 410), so the specific failure is unrecorded, and the same suite passes locally on macOS, so it is Linux-CI-specific. (b) **GitHub Actions now refuses to start jobs on this account**: a run triggered 2026-08-29 died in 2 s with *"The job was not started because recent account payments have failed or your spending limit needs to be increased."* Separately, `origin/main` is two commits behind local `main` — `48a0e04` and `77d87ff` were never pushed and have never been built. `CONTRIBUTING.md` still describes a separate CGO job from the removed dual-binary era. | **P9** — ADR-0011 records a gate that is now decorative, and (b) must be cleared before anyone can even find out why (a) happens. |
@@ -381,9 +396,11 @@ rows, and all three of the area's principles. *B, the interface:* #5 alone, and 
 was the consumer's failure to use the boundary, not the boundary's. *C, the runtime:* #2.
 *D, the record:* #7. Row #9 is attributed to no principle.
 
-**Status after increment 3.** #1, #2 and #8 are fixed; area C holds outright. Area A is
-down to #3, #4 and #6, all three of which are increment 4's subject. #5, #7 and #9 are
-untouched.
+**Status after increment 4.** #1, #2, #3, #4 and #8 are fixed; areas A's identity and
+validation halves and area C hold outright. Area A is down to **#6 alone** — writes to
+the source of truth are still not atomic — and P3's hold is conditional in one honest
+way: kg now refuses a corpus that violates it, and the corpus that does is in another
+repository and is not repaired yet. #5, #7 and #9 are untouched.
 
 Two things fall out of that split. **The area kg is least distinctive in is the area it
 holds worst** — area A's position is the one the field has since standardised, and it is
@@ -429,8 +446,14 @@ regrouping is not licence to add, remove, or soften a principle.
 
 3. **Where does identity live — in the file or in the path?** Both are defensible. A
    slug in the file makes renames free and collisions detectable. A path-derived ID
-   makes lookup O(1) with no index. The current answer is *both, unenforced*, which is
-   the one option that is definitely wrong (#3).
+   makes lookup O(1) with no index. The answer was *both, unenforced*, which is the one
+   option that is definitely wrong (#3).
+   **CLOSED, increment 4: the path.**
+   [ADR-0029](../decisions/0029-path-derived-identity.md) records it. `id:` and `type:`
+   stay in the file as a checked echo, because P1 wants a file to say what it is; a
+   disagreement refuses the load. The deciding argument was that a file-authoritative
+   identity needs an id→path map to answer the cheapest question kg has, and ADR-0027
+   has just deleted the index and the daemon that kept one warm.
 
 4. **Is the on-disk format the product?** If more kg graphs should exist as examples,
    the durable artifact is the *format*, and it needs a versioned specification a second
@@ -457,6 +480,13 @@ regrouping is not licence to add, remove, or soften a principle.
    area B. They are stated as one rule precisely so that nobody gives them one setting,
    which is a good reason to keep them together and not an argument that they are one
    property. Splitting them would cost a stable identifier; that trade is unsettled.
+   **STILL OPEN, and increment 4 made the case for keeping it whole stronger.**
+   [ADR-0028](../decisions/0028-load-time-structural-enforcement.md) found that P3 is
+   one principle over **three** classes — identity, grammar, content — at **two**
+   moments, and that the classes do not partition the same way at both: a dangling
+   target is refused at the write boundary and reported by a load. Split P3 in two and
+   the split has to be made twice, differently. The question the split was meant to
+   answer — which area each half belongs to — turns out to have no single answer.
 
 8. **Area B names three shapes and no promise.** P5 fixes what may be written in, P6 what
    comes out, P7 how a caller reaches kg — and none of them says what kg promises *not to
@@ -490,6 +520,19 @@ question 6's blocker is gone; questions 1 and 2 have a **proposed and unratified
 in ADR-0026 and are still open. **No principle's statement, number, check or cost
 changed** — the point of the increment was to stop violating three of them, not to move
 them.
+
+***Updated 2026-08-31 for increment 4.*** Violations #3 and #4 are fixed and say so;
+question 3 is **closed** — identity is path-derived, ADR-0029 — and question 7 has its
+second piece of evidence and is still open. **P3's statement, check and cost were
+edited**, and this is the one place a principle's text moved in this increment, so it
+is called out: the statement and the check disagreed with each other about whether a
+dangling relation target fails a load or is reported, and `docs/increments.md` §4
+carried the same contradiction between its deliverable and its done-condition. The
+enforced/advised split, P3's number and its area are unchanged; what was added is
+**which moment each half binds at**, which is the thing the rule was silent about and
+the reason it could be read two ways.
+[ADR-0028](../decisions/0028-load-time-structural-enforcement.md) has the argument, the
+alternatives, and what Paul would be overruling to decide it the other way.
 
 ***P7 revised 2026-08-29***, on Paul's decision — *"I like the library plus CLI model.
 Feels more useful."* — from **the integration boundary is a process, not a library** to

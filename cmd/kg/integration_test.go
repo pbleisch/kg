@@ -611,3 +611,141 @@ func TestLinkRefusesMissingSource(t *testing.T) {
 		t.Fatal("a stub entity was created for the missing source")
 	}
 }
+
+// seedFile writes an entity file directly, without the write boundary,
+// because every violation these tests seed is one the boundary refuses.
+func seedFile(t *testing.T, kgDir, typeName, file, body string) string {
+	t.Helper()
+	dir := filepath.Join(kgDir, "entities", typeName)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, file)
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// The done-condition of increment 4, one violation class per subtest: a
+// structural one fails the load naming the offending records, and a dangling
+// target is reported and exits 0 (ADR-0028).
+func TestValidateSeededViolations(t *testing.T) {
+	t.Run("two files claiming one identity", func(t *testing.T) {
+		dir := initKG(t)
+		seedFile(t, dir, "source", "m%C3%A4yra.yaml", "id: source:mäyra\ntype: source\n")
+		seedFile(t, dir, "source", "mäyra.yaml", "id: source:mäyra\ntype: source\n")
+
+		out, err := runCmd(t, "validate", "--dir="+dir)
+		if err == nil {
+			t.Fatalf("kg validate exited 0 on a duplicate identity: %q", out)
+		}
+		if !strings.Contains(out, "m%C3%A4yra.yaml") || !strings.Contains(out, "mäyra.yaml") {
+			t.Errorf("the refusal did not name both files:\n%s", out)
+		}
+	})
+
+	t.Run("a file in the wrong place", func(t *testing.T) {
+		dir := initKG(t)
+		seedFile(t, dir, "person", "alice.yaml", "id: person:alicia\ntype: person\n")
+
+		out, err := runCmd(t, "validate", "--dir="+dir)
+		if err == nil {
+			t.Fatalf("kg validate exited 0 on an id/path disagreement: %q", out)
+		}
+		if !strings.Contains(out, "person:alicia") || !strings.Contains(out, "person:alice") {
+			t.Errorf("the refusal did not name both identities:\n%s", out)
+		}
+	})
+
+	t.Run("an illegal attribute name", func(t *testing.T) {
+		dir := initKG(t)
+		seedFile(t, dir, "person", "alice.yaml",
+			"id: person:alice\ntype: person\nattributes:\n  --dir: .kg\n")
+
+		out, err := runCmd(t, "validate", "--dir="+dir)
+		if err == nil {
+			t.Fatalf("kg validate exited 0 on an illegal attribute name: %q", out)
+		}
+		if !strings.Contains(out, "--dir") {
+			t.Errorf("the refusal did not name the attribute:\n%s", out)
+		}
+	})
+
+	t.Run("a relation pointing at nothing is reported", func(t *testing.T) {
+		dir := initKG(t)
+		seedFile(t, dir, "person", "alice.yaml",
+			"id: person:alice\ntype: person\nrelations:\n  knows:\n    - person:nobody\n")
+
+		out, err := runCmd(t, "validate", "--dir="+dir)
+		if err != nil {
+			t.Fatalf("a dangling target refused the load: %v\n%s", err, out)
+		}
+		if !strings.Contains(out, "dangling_relation") || !strings.Contains(out, "person:nobody") {
+			t.Errorf("the dangling target was not reported:\n%s", out)
+		}
+	})
+}
+
+// `kg validate --fix` repairs the classes a rule can repair and moves no file.
+func TestValidateFixIsPathAuthoritative(t *testing.T) {
+	dir := initKG(t)
+	occupant := seedFile(t, dir, "person", "alice.yaml",
+		"id: person:alice\ntype: person\nattributes:\n  name: The one already there\n")
+	stray := seedFile(t, dir, "people", "alice.yaml",
+		"id: person:alice\ntype: person\nattributes:\n  name: The stray\n  --dir: .kg\n")
+
+	if _, err := runCmd(t, "validate", "--dir="+dir); err == nil {
+		t.Fatal("kg validate exited 0 on a corpus with two violations")
+	}
+	out, err := runCmd(t, "validate", "--fix", "--dir="+dir)
+	if err != nil {
+		t.Fatalf("kg validate --fix: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(stray); err != nil {
+		t.Errorf("--fix moved or removed a file: %v", err)
+	}
+	if _, err := os.Stat(occupant); err != nil {
+		t.Errorf("--fix clobbered the occupant: %v", err)
+	}
+	if _, err := runCmd(t, "validate", "--dir="+dir); err != nil {
+		t.Errorf("the graph still does not load after --fix: %v", err)
+	}
+
+	got, err := os.ReadFile(occupant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "The one already there") {
+		t.Errorf("person:alice was overwritten by the stray:\n%s", got)
+	}
+}
+
+// A graph full of warnings still loads.
+func TestValidateWarningsExitZero(t *testing.T) {
+	dir := initKG(t)
+	for _, name := range []string{"alice", "bob"} {
+		seedFile(t, dir, "person", name+".yaml",
+			"id: person:"+name+"\ntype: person\nattributes:\n  whatever: x\nrelations:\n  knows:\n    - person:nobody\n")
+	}
+	out, err := runCmd(t, "validate", "--dir="+dir)
+	if err != nil {
+		t.Fatalf("a graph of warnings refused: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "0 structural error(s)") {
+		t.Errorf("expected no structural errors:\n%s", out)
+	}
+}
+
+// Resolve refuses a partial index rather than answering from one: the pass it
+// replaced was permanently one document behind.
+func TestResolveRefusesAnIncompleteIndex(t *testing.T) {
+	dir := initKG(t)
+	seedFile(t, dir, "person", "alice.yaml",
+		"id: person:alice\ntype: person\nattributes:\n  name: Alice\n")
+
+	out, err := runCmd(t, "resolve", "--dir="+dir)
+	if err == nil {
+		t.Fatalf("kg resolve answered with no sidecar at all: %q", out)
+	}
+}

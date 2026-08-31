@@ -79,9 +79,11 @@ mage install        # installs kg to $GOPATH/bin
 | `kg types` | List schema types |
 | `kg describe <type>` | Show type schema |
 | `kg merge <source> <target>` | Merge two entities |
-| `kg dedup <type> --threshold --fields` | Find/merge duplicate entities by similarity |
+| `kg resolve` | Report every pair in the corpus that may be one entity (merges nothing) |
+| `kg dedup <type> --threshold --fields` | Find/merge duplicate entities of one type by similarity |
 | `kg stats` | Graph metrics |
-| `kg validate` | Validate entities against schemas |
+| `kg validate` | Check the graph: structure fails, content warns |
+| `kg validate --fix` | Repair `id:`/`type:` to agree with the path, drop illegal attribute names |
 | `kg sync` | Rebuild derived data (the vector sidecar) |
 | `kg embed` | Generate embeddings (`--init`, `--show`, `--rebuild`, `--dry-run`) |
 | `kg watch` | Stream entity/relation change events |
@@ -145,6 +147,34 @@ There is no index and no daemon. A read opens files:
 latency budget and the corpus size it holds for, with the measurements behind
 both. [decisions/0027](decisions/0027-delete-index-and-daemon.md) records why
 the LadybugDB index and the daemon were deleted.
+
+### Identity is where the file sits
+
+A file at `.kg/entities/<type>/<local-id>.yaml` **is** `<type>:<local-id>`. The
+`id:` and `type:` lines inside stay, so a file read on its own still says what
+it is, but they are a checked echo, not the source — when they disagree with the
+path the graph does not load. See
+[decisions/0029](decisions/0029-path-derived-identity.md).
+
+### Structure is enforced; content is advised
+
+`kg validate` reports both and treats them differently. **Structure fails**, and
+no flag suppresses it: an identity two files claim (named, both of them), a
+declared `id:` or `type:` that disagrees with the file's location, an attribute
+name outside `[a-z][a-z0-9_]*`, a file that will not parse. **Content warns**,
+and the graph still loads: an unknown attribute, a schema violation, a type with
+no schema, a relation target that names nothing.
+
+```bash
+kg validate          # every finding, both kinds; exit 1 only on structure
+kg validate --fix    # correct id:/type: to the path, drop illegal names
+```
+
+`--fix` never moves a file. Where two files claim one identity it reports and
+refuses to choose, because choosing which one is the entity is not kg's call.
+[decisions/0028](decisions/0028-load-time-structural-enforcement.md) states the
+three classes and why a dangling relation target is refused by the *write
+boundary* but only reported by a *load*.
 
 ### Embeddings
 

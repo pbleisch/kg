@@ -28,6 +28,15 @@ func findFix(result *NormalizeResult, field string) *Fix {
 	return nil
 }
 
+func repair(t *testing.T, kgDir, path string) *NormalizeResult {
+	t.Helper()
+	result, err := NormalizeEntityFile(kgDir, path, RepairAll())
+	if err != nil {
+		t.Fatalf("NormalizeEntityFile: %v", err)
+	}
+	return result
+}
+
 func TestNormalize_AlreadyNormalized(t *testing.T) {
 	kgDir := t.TempDir()
 	path := writeTestEntity(t, kgDir, "person", "alice.yaml", `id: person:alice
@@ -39,10 +48,7 @@ relations:
     - person:bob
 `)
 
-	result, err := NormalizeEntityFile(kgDir, path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	result := repair(t, kgDir, path)
 	if len(result.Fixes) != 0 {
 		t.Errorf("expected no fixes, got %d: %v", len(result.Fixes), result.Fixes)
 	}
@@ -59,25 +65,22 @@ links:
     - person:bob
 `)
 
-	result, err := NormalizeEntityFile(kgDir, path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
+	result := repair(t, kgDir, path)
 	if f := findFix(result, "links"); f == nil {
 		t.Error("expected links→relations fix")
 	}
-
 	e, err := ReadEntity(kgDir, "person:alice")
 	if err != nil {
-		t.Fatalf("reading normalized entity: %v", err)
+		t.Fatalf("ReadEntity: %v", err)
 	}
-	if len(e.Relations["knows"]) != 1 || e.Relations["knows"][0] != "person:bob" {
-		t.Errorf("expected relations.knows=[person:bob], got %v", e.Relations)
+	if len(e.Relations["knows"]) != 1 {
+		t.Errorf("Relations = %v, want knows:[person:bob]", e.Relations)
 	}
 }
 
-func TestNormalize_IDUppercaseType(t *testing.T) {
+// The path is the identity (ADR-0029): a file at entities/person/alice.yaml is
+// person:alice whatever its id line says, and the repair corrects the line.
+func TestNormalize_IDFollowsPath(t *testing.T) {
 	kgDir := t.TempDir()
 	path := writeTestEntity(t, kgDir, "person", "alice.yaml", `id: Person:alice
 type: Person
@@ -85,219 +88,218 @@ attributes:
   name: Alice
 `)
 
-	result, err := NormalizeEntityFile(kgDir, path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
+	result := repair(t, kgDir, path)
 	if f := findFix(result, "id"); f == nil {
-		t.Error("expected id normalization fix")
+		t.Error("expected an id fix")
 	}
 	if f := findFix(result, "type"); f == nil {
-		t.Error("expected type normalization fix")
+		t.Error("expected a type fix")
 	}
 
 	e, err := ReadEntity(kgDir, "person:alice")
 	if err != nil {
-		t.Fatalf("reading normalized entity: %v", err)
+		t.Fatalf("ReadEntity: %v", err)
 	}
-	if e.ID != "person:alice" {
-		t.Errorf("expected id person:alice, got %s", e.ID)
+	if e.ID != "person:alice" || e.Type != "person" {
+		t.Errorf("got %s/%s, want person:alice/person", e.ID, e.Type)
 	}
 }
 
-func TestNormalize_MissingID(t *testing.T) {
+// A file whose id names a *different* directory is corrected in place. The old
+// behaviour moved it to EntityPath(id), which on the real corpus overwrites the
+// file already sitting there and loses the entity that was in this one.
+func TestNormalize_NeverMovesAFile(t *testing.T) {
 	kgDir := t.TempDir()
-	path := writeTestEntity(t, kgDir, "person", "alice.yaml", `type: person
+	occupant := writeTestEntity(t, kgDir, "person", "alice.yaml", `id: person:alice
+type: person
 attributes:
+  name: The one that was already there
+`)
+	stray := writeTestEntity(t, kgDir, "people", "alice.yaml", `id: person:alice
+type: person
+attributes:
+  name: The one with the stale id
+`)
+
+	repair(t, kgDir, stray)
+
+	if _, err := os.Stat(stray); err != nil {
+		t.Errorf("the repaired file was moved or removed: %v", err)
+	}
+	e, err := ReadEntity(kgDir, "person:alice")
+	if err != nil {
+		t.Fatalf("ReadEntity: %v", err)
+	}
+	if e.Attributes["name"] != "The one that was already there" {
+		t.Errorf("person:alice was overwritten: %v", e.Attributes["name"])
+	}
+	if _, err := os.Stat(occupant); err != nil {
+		t.Errorf("the occupant lost its file: %v", err)
+	}
+	moved, err := ReadEntity(kgDir, "people:alice")
+	if err != nil {
+		t.Fatalf("reading the repaired file by its real identity: %v", err)
+	}
+	if moved.Attributes["name"] != "The one with the stale id" {
+		t.Errorf("people:alice = %v", moved.Attributes["name"])
+	}
+}
+
+func TestNormalize_MissingIDAndType(t *testing.T) {
+	kgDir := t.TempDir()
+	path := writeTestEntity(t, kgDir, "person", "alice.yaml", `attributes:
   name: Alice
 `)
 
-	result, err := NormalizeEntityFile(kgDir, path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
+	result := repair(t, kgDir, path)
 	if f := findFix(result, "id"); f == nil {
 		t.Error("expected id fix")
 	}
-	if result.EntityID != "person:alice" {
-		t.Errorf("expected entity_id person:alice, got %s", result.EntityID)
-	}
-}
-
-func TestNormalize_BareID(t *testing.T) {
-	kgDir := t.TempDir()
-	path := writeTestEntity(t, kgDir, "person", "alice.yaml", `id: alice
-type: person
-attributes:
-  name: Alice
-`)
-
-	result, err := NormalizeEntityFile(kgDir, path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if f := findFix(result, "id"); f == nil {
-		t.Error("expected id fix for bare ID")
-	}
-	if result.EntityID != "person:alice" {
-		t.Errorf("expected entity_id person:alice, got %s", result.EntityID)
-	}
-}
-
-func TestNormalize_TypeToLowerPascal(t *testing.T) {
-	kgDir := t.TempDir()
-	path := writeTestEntity(t, kgDir, "person", "alice.yaml", `id: person:alice
-type: PERSON
-attributes:
-  name: Alice
-`)
-
-	result, err := NormalizeEntityFile(kgDir, path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if f := findFix(result, "type"); f == nil {
-		t.Error("expected type normalization fix")
-	}
-
-	e, err := ReadEntity(kgDir, "person:alice")
-	if err != nil {
-		t.Fatalf("reading normalized entity: %v", err)
-	}
-	if e.Type != "person" {
-		t.Errorf("expected type person, got %s", e.Type)
-	}
-}
-
-func TestNormalize_MissingType(t *testing.T) {
-	kgDir := t.TempDir()
-	path := writeTestEntity(t, kgDir, "person", "alice.yaml", `id: person:alice
-attributes:
-  name: Alice
-`)
-
-	result, err := NormalizeEntityFile(kgDir, path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
 	if f := findFix(result, "type"); f == nil {
 		t.Error("expected type fix")
 	}
-
-	e, err := ReadEntity(kgDir, "person:alice")
-	if err != nil {
-		t.Fatalf("reading normalized entity: %v", err)
-	}
-	if e.Type != "person" {
-		t.Errorf("expected type person, got %s", e.Type)
+	if result.EntityID != "person:alice" {
+		t.Errorf("EntityID = %s, want person:alice", result.EntityID)
 	}
 }
 
-func TestNormalize_RelationTargetCasing(t *testing.T) {
+// An attribute name a producer invented by splitting a command line on '=' is
+// dropped, with the value in the message so it is not lost silently.
+func TestNormalize_DropsIllegalAttributes(t *testing.T) {
+	kgDir := t.TempDir()
+	path := writeTestEntity(t, kgDir, "person", "alice.yaml", `id: person:alice
+type: person
+attributes:
+  name: Alice
+  --dir: .kg
+`)
+
+	result := repair(t, kgDir, path)
+	f := findFix(result, "attributes.--dir")
+	if f == nil {
+		t.Fatalf("expected the --dir attribute to be dropped, got %v", result.Fixes)
+	}
+	if want := `dropped illegal attribute "--dir" (was .kg)`; f.Message != want {
+		t.Errorf("message = %q, want %q", f.Message, want)
+	}
+
+	e, err := ReadEntity(kgDir, "person:alice")
+	if err != nil {
+		t.Fatalf("ReadEntity: %v", err)
+	}
+	if _, still := e.Attributes["--dir"]; still {
+		t.Error("--dir survived the repair")
+	}
+	if e.Attributes["name"] != "Alice" {
+		t.Errorf("name = %v, want Alice", e.Attributes["name"])
+	}
+}
+
+func TestNormalize_LeavesLegalAttributesAlone(t *testing.T) {
+	kgDir := t.TempDir()
+	path := writeTestEntity(t, kgDir, "person", "alice.yaml", `id: Person:alice
+type: person
+attributes:
+  name: Alice
+  age: 30
+  active: true
+`)
+
+	repair(t, kgDir, path)
+	e, err := ReadEntity(kgDir, "person:alice")
+	if err != nil {
+		t.Fatalf("ReadEntity: %v", err)
+	}
+	if e.Attributes["name"] != "Alice" || e.Attributes["age"] != 30 || e.Attributes["active"] != true {
+		t.Errorf("attributes = %v", e.Attributes)
+	}
+}
+
+// Relation *targets* are identities, and a repair does not guess at one. This
+// used to snake_case them, which silently repoints an edge.
+func TestNormalize_LeavesRelationTargetsAlone(t *testing.T) {
+	kgDir := t.TempDir()
+	path := writeTestEntity(t, kgDir, "person", "alice.yaml", `id: person:alice
+type: person
+relations:
+  knowsWell:
+    - Person:bob
+`)
+
+	result := repair(t, kgDir, path)
+	if f := findFix(result, "relations.knowsWell"); f == nil {
+		t.Error("expected the relation key to be normalized")
+	}
+
+	e, err := ReadEntity(kgDir, "person:alice")
+	if err != nil {
+		t.Fatalf("ReadEntity: %v", err)
+	}
+	got := e.Relations["knows_well"]
+	if len(got) != 1 || got[0] != "Person:bob" {
+		t.Errorf("knows_well = %v, want [Person:bob] untouched", got)
+	}
+}
+
+func TestNormalize_DropsDanglingOnlyWhenAsked(t *testing.T) {
 	kgDir := t.TempDir()
 	path := writeTestEntity(t, kgDir, "person", "alice.yaml", `id: person:alice
 type: person
 relations:
   knows:
-    - Person:bob
-    - person:carol
+    - person:bob
+    - person:nobody
 `)
 
-	result, err := NormalizeEntityFile(kgDir, path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if r := repair(t, kgDir, path); len(r.Fixes) != 0 {
+		t.Errorf("a default repair touched a dangling target: %v", r.Fixes)
 	}
 
-	if f := findFix(result, "relations.knows"); f == nil {
-		t.Error("expected relation target fix")
+	opts := RepairAll()
+	opts.Dangling = true
+	opts.Known = map[string]bool{"person:alice": true, "person:bob": true}
+	result, err := NormalizeEntityFile(kgDir, path, opts)
+	if err != nil {
+		t.Fatalf("NormalizeEntityFile: %v", err)
+	}
+	if len(result.Fixes) != 1 {
+		t.Fatalf("Fixes = %v, want one dropped target", result.Fixes)
 	}
 
 	e, err := ReadEntity(kgDir, "person:alice")
 	if err != nil {
-		t.Fatalf("reading normalized entity: %v", err)
+		t.Fatalf("ReadEntity: %v", err)
 	}
-
-	targets := e.Relations["knows"]
-	if len(targets) != 2 {
-		t.Fatalf("expected 2 targets, got %d", len(targets))
-	}
-	for _, target := range targets {
-		tp, _, _ := ParseEntityID(target)
-		if tp != "person" {
-			t.Errorf("expected lowercase type in target, got %s", target)
-		}
+	if got := e.Relations["knows"]; len(got) != 1 || got[0] != "person:bob" {
+		t.Errorf("knows = %v, want [person:bob]", got)
 	}
 }
 
-func TestNormalize_FileMove(t *testing.T) {
-	kgDir := t.TempDir()
-	// Entity id says person:alice but file is in wrong directory
-	path := writeTestEntity(t, kgDir, "people", "alice.yaml", `id: person:alice
-type: person
-attributes:
-  name: Alice
-`)
-
-	result, err := NormalizeEntityFile(kgDir, path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if !result.Moved {
-		t.Error("expected file to be moved")
-	}
-
-	// Old file should be gone
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Error("expected old file to be removed")
-	}
-
-	// New file should exist at correct path
-	e, err := ReadEntity(kgDir, "person:alice")
-	if err != nil {
-		t.Fatalf("reading moved entity: %v", err)
-	}
-	if e.ID != "person:alice" {
-		t.Errorf("expected id person:alice, got %s", e.ID)
-	}
-}
-
-func TestNormalize_MultipleFixes(t *testing.T) {
+func TestNormalize_DryRunWritesNothing(t *testing.T) {
 	kgDir := t.TempDir()
 	path := writeTestEntity(t, kgDir, "person", "alice.yaml", `id: Person:alice
-type: PERSON
-links:
-  knows:
-    - Person:bob
+type: person
 `)
-
-	result, err := NormalizeEntityFile(kgDir, path)
+	before, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatal(err)
 	}
 
-	// Should have fixes for: links→relations, id casing, type casing, target casing
-	if len(result.Fixes) < 3 {
-		t.Errorf("expected at least 3 fixes, got %d: %v", len(result.Fixes), result.Fixes)
-	}
-
-	e, err := ReadEntity(kgDir, "person:alice")
+	opts := RepairAll()
+	opts.DryRun = true
+	result, err := NormalizeEntityFile(kgDir, path, opts)
 	if err != nil {
-		t.Fatalf("reading normalized entity: %v", err)
+		t.Fatalf("NormalizeEntityFile: %v", err)
 	}
-	if e.ID != "person:alice" {
-		t.Errorf("expected id person:alice, got %s", e.ID)
+	if len(result.Fixes) == 0 {
+		t.Error("a dry run should still report the fix it would make")
 	}
-	if e.Type != "person" {
-		t.Errorf("expected type person, got %s", e.Type)
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(e.Relations["knows"]) != 1 || e.Relations["knows"][0] != "person:bob" {
-		t.Errorf("expected relations.knows=[person:bob], got %v", e.Relations)
+	if string(before) != string(after) {
+		t.Error("a dry run rewrote the file")
 	}
 }
 
@@ -313,57 +315,40 @@ links:
     - book:foo
 `)
 
-	result, err := NormalizeEntityFile(kgDir, path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
+	result := repair(t, kgDir, path)
 	if f := findFix(result, "links"); f == nil {
 		t.Error("expected links merge fix")
 	}
 
 	e, err := ReadEntity(kgDir, "person:alice")
 	if err != nil {
-		t.Fatalf("reading normalized entity: %v", err)
+		t.Fatalf("ReadEntity: %v", err)
 	}
 	if len(e.Relations["knows"]) != 1 {
-		t.Errorf("expected knows relation preserved, got %v", e.Relations["knows"])
+		t.Errorf("knows = %v", e.Relations["knows"])
 	}
 	if len(e.Relations["authored"]) != 1 {
-		t.Errorf("expected authored relation merged, got %v", e.Relations["authored"])
+		t.Errorf("authored = %v", e.Relations["authored"])
 	}
 }
 
-func TestNormalize_PreservesAttributes(t *testing.T) {
+// A file kg would not have written cannot be repaired by editing it: the
+// filename itself is wrong, and choosing which of two encodings survives is a
+// decision kg does not make.
+func TestNormalize_ReportsUnfixablePath(t *testing.T) {
 	kgDir := t.TempDir()
-	path := writeTestEntity(t, kgDir, "person", "alice.yaml", `id: Person:alice
-type: person
-attributes:
-  name: Alice
-  age: 30
-  active: true
+	path := writeTestEntity(t, kgDir, "source", "mäyrä.yaml", `id: source:x
+type: source
 `)
 
-	result, err := NormalizeEntityFile(kgDir, path)
+	result, err := NormalizeEntityFile(kgDir, path, RepairAll())
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("NormalizeEntityFile: %v", err)
 	}
-
-	if len(result.Fixes) == 0 {
-		t.Fatal("expected at least id fix")
+	if len(result.Unfixable) != 1 || result.Unfixable[0].Code != "non_canonical_path" {
+		t.Fatalf("Unfixable = %+v, want one non_canonical_path", result.Unfixable)
 	}
-
-	e, err := ReadEntity(kgDir, "person:alice")
-	if err != nil {
-		t.Fatalf("reading normalized entity: %v", err)
-	}
-	if e.Attributes["name"] != "Alice" {
-		t.Errorf("expected name=Alice, got %v", e.Attributes["name"])
-	}
-	if e.Attributes["age"] != 30 {
-		t.Errorf("expected age=30, got %v", e.Attributes["age"])
-	}
-	if e.Attributes["active"] != true {
-		t.Errorf("expected active=true, got %v", e.Attributes["active"])
+	if len(result.Fixes) != 0 {
+		t.Errorf("Fixes = %v, want none", result.Fixes)
 	}
 }

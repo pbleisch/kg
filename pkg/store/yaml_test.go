@@ -62,7 +62,7 @@ func TestRoundTrip(t *testing.T) {
 
 	entity := &Entity{
 		ID:   "person:alice",
-		Type: "Person",
+		Type: "person",
 		Attributes: map[string]any{
 			"name": "Alice Chen",
 			"role": "Engineer",
@@ -108,7 +108,7 @@ func TestDeleteEntity(t *testing.T) {
 
 	entity := &Entity{
 		ID:   "person:bob",
-		Type: "Person",
+		Type: "person",
 		Attributes: map[string]any{
 			"name": "Bob",
 		},
@@ -132,9 +132,9 @@ func TestListEntities(t *testing.T) {
 	dir := t.TempDir()
 
 	entities := []*Entity{
-		{ID: "person:alice", Type: "Person", Attributes: map[string]any{"name": "Alice"}},
-		{ID: "person:bob", Type: "Person", Attributes: map[string]any{"name": "Bob"}},
-		{ID: "project:atlas", Type: "Project", Attributes: map[string]any{"name": "Atlas"}},
+		{ID: "person:alice", Type: "person", Attributes: map[string]any{"name": "Alice"}},
+		{ID: "person:bob", Type: "person", Attributes: map[string]any{"name": "Bob"}},
+		{ID: "project:atlas", Type: "project", Attributes: map[string]any{"name": "Atlas"}},
 	}
 
 	for _, e := range entities {
@@ -165,5 +165,98 @@ func TestListEntities(t *testing.T) {
 	}
 	if len(projects) != 1 {
 		t.Errorf("ListEntitiesByType(project) count = %d, want 1", len(projects))
+	}
+}
+
+// A load refuses what a write refuses, and the reverse: kg cannot write a file
+// it will not read back (P3, ADR-0028).
+func TestWriteEntityRefusesWhatALoadWouldRefuse(t *testing.T) {
+	dir := t.TempDir()
+
+	err := WriteEntity(dir, &Entity{ID: "person:alice", Type: "Person"})
+	if _, refused := LoadRefused(err); !refused {
+		t.Errorf("WriteEntity with a disagreeing type = %v, want a refusal", err)
+	}
+	err = WriteEntity(dir, &Entity{
+		ID: "person:alice", Type: "person",
+		Attributes: map[string]any{"--dir": ".kg"},
+	})
+	if _, refused := LoadRefused(err); !refused {
+		t.Errorf("WriteEntity with an illegal attribute = %v, want a refusal", err)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(dir, "entities")); len(entries) > 0 {
+		// Both refusals happen before MkdirAll, so nothing is created at all.
+		t.Errorf("a refused write left %v behind", entries)
+	}
+}
+
+// A file with no `id:` or `type:` is not an error: the path says what it is,
+// and a loader fills them in so no caller has to know which it got (ADR-0029).
+func TestReadEntityAdoptsTheIdentityFromThePath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "entities", "person", "alice.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("attributes:\n  name: Alice\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	e, err := ReadEntity(dir, "person:alice")
+	if err != nil {
+		t.Fatalf("ReadEntity: %v", err)
+	}
+	if e.ID != "person:alice" || e.Type != "person" {
+		t.Errorf("got %s/%s, want person:alice/person", e.ID, e.Type)
+	}
+}
+
+// A percent-encoded local id round-trips: EntityPath encodes it, IdentityAt
+// decodes it, and the two agree — which is what makes the encoding part of the
+// identity contract rather than a detail of one function.
+func TestIdentityRoundTripsThroughTheEncoding(t *testing.T) {
+	dir := t.TempDir()
+	for _, id := range []string{"source:mäyrä", "source:a b", "source:x/y", "person:alice"} {
+		e := &Entity{ID: id, Type: "source"}
+		if tn, _, err := ParseEntityID(id); err == nil {
+			e.Type = tn
+		}
+		if err := WriteEntity(dir, e); err != nil {
+			t.Fatalf("WriteEntity(%s): %v", id, err)
+		}
+		got, err := IdentityAt(dir, EntityPath(dir, id))
+		if err != nil {
+			t.Fatalf("IdentityAt(%s): %v", id, err)
+		}
+		if got.ID != id {
+			t.Errorf("round trip: %q → %q", id, got.ID)
+		}
+		if s := CheckPath(EntityPath(dir, id), got); s != nil {
+			t.Errorf("CheckPath(%s) = %v, want nil", id, s)
+		}
+	}
+}
+
+// ListEntityFiles is the one read that does not enforce, because the repair
+// has to be able to walk what it is repairing.
+func TestListEntityFilesWalksACorpusThatWillNotLoad(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "entities", "person", "alice.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("id: person:alicia\ntype: robot\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ListEntities(dir); err == nil {
+		t.Error("ListEntities loaded a corpus that disagrees with itself")
+	}
+	files, err := ListEntityFiles(dir)
+	if err != nil {
+		t.Fatalf("ListEntityFiles: %v", err)
+	}
+	if len(files) != 1 || files[0].Entity.ID != "person:alicia" {
+		t.Errorf("ListEntityFiles = %+v, want the file as it is on disk", files)
 	}
 }

@@ -16,6 +16,9 @@ import (
 func Link(kgDir, sourceID, relation, targetID string) error {
 	e, err := store.ReadEntity(kgDir, sourceID)
 	if err != nil {
+		if _, refused := store.LoadRefused(err); refused {
+			return fmt.Errorf("linking from %q: %w", sourceID, err)
+		}
 		return fmt.Errorf("linking from %q: source does not exist", sourceID)
 	}
 

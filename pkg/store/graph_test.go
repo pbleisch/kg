@@ -58,23 +58,25 @@ func TestLoadGraph_Empty(t *testing.T) {
 	}
 }
 
-// A malformed file is skipped with a warning, not fatal: a graph under
-// construction is legitimately incomplete (P3).
-func TestLoadGraph_SkipsMalformed(t *testing.T) {
+// A file that will not parse refuses the load, naming it. It used to be
+// skipped with a warning; a file kg cannot read is a fact it cannot reach, so
+// it is structural (ADR-0028).
+func TestLoadGraph_RefusesMalformed(t *testing.T) {
 	dir := seedGraph(t)
 	bad := filepath.Join(dir, "entities", "person", "broken.yaml")
 	if err := os.WriteFile(bad, []byte("id: [unclosed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	g, err := LoadGraph(dir)
-	if err != nil {
-		t.Fatalf("LoadGraph: %v", err)
+	_, err := LoadGraph(dir)
+	errs, refused := LoadRefused(err)
+	if !refused {
+		t.Fatalf("LoadGraph err = %v, want a *LoadError", err)
 	}
-	if g.Len() != 4 {
-		t.Errorf("Len = %d, want the 4 readable entities", g.Len())
+	if len(errs) != 1 || errs[0].Code != "malformed" {
+		t.Fatalf("errors = %+v, want one malformed", errs)
 	}
-	if len(g.Warnings) != 1 {
-		t.Errorf("Warnings = %v, want one naming the malformed file", g.Warnings)
+	if len(errs[0].Files) != 1 || errs[0].Files[0] != bad {
+		t.Errorf("Files = %v, want %q", errs[0].Files, bad)
 	}
 }
 

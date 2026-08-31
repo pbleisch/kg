@@ -15,7 +15,12 @@ func init() {
 	cmd := &cobra.Command{
 		Use:   "apply <manifest>",
 		Short: "Apply a batch of typed records (supports --dry-run)",
-		Args:  cobra.MinimumNArgs(1),
+		Long: `Apply a manifest of typed records through kg's one write boundary.
+
+Entity resolution is not part of a write. It used to be, as --on-conflict
+dedup, running once per batch against a vector sidecar that was always one
+document behind; it is now a separate whole-corpus pass — see ` + "`kg resolve`" + `.`,
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			data, err := os.ReadFile(args[0])
 			if err != nil {
@@ -29,15 +34,11 @@ func init() {
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
 			onConflict, _ := cmd.Flags().GetString("on-conflict")
 			onError, _ := cmd.Flags().GetString("on-error")
-			threshold, _ := cmd.Flags().GetFloat64("dedup-threshold")
-			fields, _ := cmd.Flags().GetStringSlice("dedup-fields")
 
 			res, err := batch.Apply(cfg.kgDir, env, records, batch.Options{
-				OnConflict:     batch.ConflictPolicy(onConflict),
-				OnError:        batch.ErrorPolicy(onError),
-				DedupFields:    fields,
-				DedupThreshold: threshold,
-				DryRun:         dryRun,
+				OnConflict: batch.ConflictPolicy(onConflict),
+				OnError:    batch.ErrorPolicy(onError),
+				DryRun:     dryRun,
 			})
 			if err != nil {
 				return err
@@ -46,10 +47,8 @@ func init() {
 		},
 	}
 	cmd.Flags().Bool("dry-run", false, "Validate and summarize the batch without writing")
-	cmd.Flags().String("on-conflict", "fail", "Behavior when an identity already exists: fail, skip, merge, dedup")
+	cmd.Flags().String("on-conflict", "fail", "Behavior when an identity already exists: fail, skip, merge")
 	cmd.Flags().String("on-error", "fail", "Behavior when a record fails to apply: fail (abort and roll back), warn, skip")
-	cmd.Flags().Float64("dedup-threshold", 0.85, "Similarity threshold for dedup mode (0.0–1.0)")
-	cmd.Flags().StringSlice("dedup-fields", nil, "Fields for dedup similarity (required with --on-conflict dedup)")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -77,11 +76,8 @@ func printApplyResult(w io.Writer, res *batch.Result) error {
 		fmt.Fprintln(w, "Dry run — nothing written.")
 		return nil
 	}
-	fmt.Fprintf(w, "Created %d, updated %d, linked %d, deleted %d, deduped %d\n",
-		res.Created, res.Updated, res.Linked, res.Deleted, res.Deduped)
-	for _, d := range res.Dedups {
-		fmt.Fprintf(os.Stderr, "  dedup: %s → %s\n", d.From, d.To)
-	}
+	fmt.Fprintf(w, "Created %d, updated %d, linked %d, deleted %d\n",
+		res.Created, res.Updated, res.Linked, res.Deleted)
 	for _, warn := range res.Warnings {
 		fmt.Fprintf(os.Stderr, "  warning: %s\n", warn.Message)
 	}

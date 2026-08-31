@@ -3,8 +3,7 @@ package store
 import (
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
+	"sort"
 
 	"gopkg.in/yaml.v3"
 )
@@ -20,77 +19,97 @@ type NormalizeResult struct {
 	Path     string `json:"path"`
 	EntityID string `json:"entity_id"`
 	Fixes    []Fix  `json:"fixes,omitempty"`
-	Moved    bool   `json:"moved,omitempty"`
-	OldPath  string `json:"old_path,omitempty"`
-	NewPath  string `json:"new_path,omitempty"`
+	// Unfixable names what is wrong with the file that this pass will not
+	// touch: an identity two files claim, or a filename kg would not write.
+	// Both need a decision about which file survives, and that is not kg's.
+	Unfixable []Structural `json:"unfixable,omitempty"`
 }
 
-// NormalizeEntityFile reads a YAML entity file, applies normalizations,
-// and writes the result back. Returns a result describing changes made.
-// If no fixes are needed, result.Fixes will be empty and the file is
-// not rewritten.
-func NormalizeEntityFile(kgDir, filePath string) (*NormalizeResult, error) {
+// NormalizeOptions selects which classes of repair to apply.
+//
+// The classes are separate settings because they cost different things.
+// Identity and Attributes rewrite a record *of* the entity and change no
+// knowledge: under path-derived identity (ADR-0029) the file's identity is
+// where it sits, so correcting a stale `id:` line moves nothing, and an
+// attribute named `--dir` with the value `.kg` is a command-line flag that
+// became knowledge. Dangling *deletes an assertion someone made*, which is why
+// it is off unless asked for.
+type NormalizeOptions struct {
+	// Identity rewrites `id:` and `type:` to agree with the file's location.
+	Identity bool
+	// Attributes drops attributes whose names are not legal.
+	Attributes bool
+	// Dangling drops relation targets that resolve to no file. Resolve is the
+	// caller's: it is given every identity the corpus holds.
+	Dangling bool
+	// Known is the set of identities the corpus holds, needed only when
+	// Dangling is set.
+	Known map[string]bool
+	// DryRun reports what would change without writing.
+	DryRun bool
+}
+
+// RepairAll is the default: the two classes that correct a record without
+// changing what anyone asserted.
+func RepairAll() NormalizeOptions {
+	return NormalizeOptions{Identity: true, Attributes: true}
+}
+
+// NormalizeEntityFile reads one entity file, applies the selected repairs and
+// writes it back to the file it came from.
+//
+// **The path is authoritative.** This used to treat `id:` as the truth and
+// *move the file* to `EntityPath(id)` — which, on a corpus where 265 files
+// declare an id that belongs to a different path, deletes one entity and
+// overwrites another, 265 times. Nothing here moves a file. Where two files
+// claim one identity, the repair reports and refuses to choose.
+func NormalizeEntityFile(kgDir, filePath string, opts NormalizeOptions) (*NormalizeResult, error) {
 	result := &NormalizeResult{Path: filePath}
+
+	ident, err := IdentityAt(kgDir, filePath)
+	if err != nil {
+		if errs, refused := LoadRefused(err); refused {
+			result.Unfixable = errs
+			return result, nil
+		}
+		return nil, err
+	}
+	result.EntityID = ident.ID
+	if bad := CheckPath(filePath, ident); bad != nil {
+		result.Unfixable = append(result.Unfixable, *bad)
+		return result, nil
+	}
 
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", filePath, err)
 	}
-
 	var raw map[string]interface{}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", filePath, err)
 	}
-
-	// Derive expected type and local ID from directory structure.
-	// Path: {kgDir}/entities/{type}/{localid}.yaml
-	entitiesDir := filepath.Join(kgDir, "entities")
-	rel, err := filepath.Rel(entitiesDir, filePath)
-	if err != nil {
-		return nil, fmt.Errorf("unexpected path: %w", err)
+	if raw == nil {
+		raw = map[string]interface{}{}
 	}
-	parts := strings.SplitN(filepath.ToSlash(rel), "/", 2)
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("unexpected entity path structure: %s", rel)
-	}
-	dirType := parts[0]
-	localFromFile := strings.TrimSuffix(filepath.Base(parts[1]), ".yaml")
 
 	normalizeLinksKey(raw, result)
-	normalizeID(raw, dirType, localFromFile, result)
-	normalizeType(raw, dirType, result)
-	normalizeRelationTargets(raw, result)
-
-	result.EntityID, _ = raw["id"].(string)
-
-	// Check if file needs to move (even if no other fixes).
-	expectedPath := EntityPath(kgDir, result.EntityID)
-	if expectedPath != "" && expectedPath != filePath {
-		result.Moved = true
-		result.OldPath = filePath
-		result.NewPath = expectedPath
-		result.Fixes = append(result.Fixes, Fix{
-			Field:   "path",
-			Message: fmt.Sprintf("moved to correct location"),
-		})
+	if opts.Identity {
+		adoptIdentity(raw, ident, result)
+	}
+	if opts.Attributes {
+		dropIllegalAttrs(raw, result)
+	}
+	normalizeRelationKeys(raw, result)
+	if opts.Dangling {
+		dropDangling(raw, opts.Known, result)
 	}
 
-	if len(result.Fixes) == 0 {
+	if len(result.Fixes) == 0 || opts.DryRun {
 		return result, nil
 	}
-
-	// Reconstruct Entity and write back.
-	e := entityFromRawMap(raw)
-
-	if err := WriteEntity(kgDir, e); err != nil {
-		return nil, fmt.Errorf("writing normalized entity: %w", err)
+	if err := RewriteEntityFile(filePath, entityFromRawMap(raw)); err != nil {
+		return nil, fmt.Errorf("writing repaired entity: %w", err)
 	}
-
-	if result.Moved {
-		os.Remove(filePath)
-		removeEmptyDir(filepath.Dir(filePath))
-	}
-
 	return result, nil
 }
 
@@ -113,118 +132,124 @@ func normalizeLinksKey(raw map[string]interface{}, result *NormalizeResult) {
 	})
 }
 
-// normalizeID ensures the id field is present and has snake_case type prefix and local ID.
-func normalizeID(raw map[string]interface{}, dirType, localFromFile string, result *NormalizeResult) {
-	idVal, _ := raw["id"].(string)
+// adoptIdentity rewrites `id:` and `type:` to the identity the path gives.
+func adoptIdentity(raw map[string]interface{}, ident Identity, result *NormalizeResult) {
+	if got, _ := raw["id"].(string); got != ident.ID {
+		raw["id"] = ident.ID
+		if got == "" {
+			result.Fixes = append(result.Fixes, Fix{
+				Field: "id", Message: "set missing id to " + ident.ID,
+			})
+		} else {
+			result.Fixes = append(result.Fixes, Fix{
+				Field:   "id",
+				Message: fmt.Sprintf("id %s → %s, to agree with the file's location", got, ident.ID),
+			})
+		}
+	}
+	if got, _ := raw["type"].(string); got != ident.Type {
+		raw["type"] = ident.Type
+		if got == "" {
+			result.Fixes = append(result.Fixes, Fix{
+				Field: "type", Message: "set missing type to " + ident.Type,
+			})
+		} else {
+			result.Fixes = append(result.Fixes, Fix{
+				Field:   "type",
+				Message: fmt.Sprintf("type %s → %s, to agree with the directory", got, ident.Type),
+			})
+		}
+	}
+}
 
-	if idVal == "" {
-		idVal = ToSnakeCase(dirType) + ":" + ToSnakeCase(localFromFile)
-		raw["id"] = idVal
-		result.Fixes = append(result.Fixes, Fix{
-			Field: "id", Message: fmt.Sprintf("set missing id to %s", idVal),
-		})
+// dropIllegalAttrs removes attributes whose names are not legal names.
+func dropIllegalAttrs(raw map[string]interface{}, result *NormalizeResult) {
+	attrs, ok := raw["attributes"].(map[string]interface{})
+	if !ok {
 		return
 	}
-
-	typePart, localPart, err := ParseEntityID(idVal)
-	if err != nil {
-		// No colon — treat as bare local ID, add type prefix from directory.
-		normalized := ToSnakeCase(dirType) + ":" + ToSnakeCase(idVal)
-		raw["id"] = normalized
+	for _, name := range IllegalAttributeNames(attrs) {
+		val := attrs[name]
+		delete(attrs, name)
 		result.Fixes = append(result.Fixes, Fix{
-			Field: "id", Message: fmt.Sprintf("added type prefix: %s → %s", idVal, normalized),
-		})
-		return
-	}
-
-	normalized := ToSnakeCase(typePart) + ":" + ToSnakeCase(localPart)
-	if normalized != idVal {
-		raw["id"] = normalized
-		result.Fixes = append(result.Fixes, Fix{
-			Field: "id", Message: fmt.Sprintf("normalized id: %s → %s", idVal, normalized),
+			Field:   "attributes." + name,
+			Message: fmt.Sprintf("dropped illegal attribute %q (was %v)", name, val),
 		})
 	}
 }
 
-// normalizeType ensures the type field is snake_case.
-func normalizeType(raw map[string]interface{}, dirType string, result *NormalizeResult) {
-	typeVal, _ := raw["type"].(string)
-
-	if typeVal == "" {
-		typeVal = ToSnakeCase(dirType)
-		raw["type"] = typeVal
-		result.Fixes = append(result.Fixes, Fix{
-			Field: "type", Message: fmt.Sprintf("set missing type to %s", typeVal),
-		})
-		return
-	}
-
-	normalized := ToSnakeCase(typeVal)
-	if normalized != typeVal {
-		raw["type"] = normalized
-		result.Fixes = append(result.Fixes, Fix{
-			Field: "type", Message: fmt.Sprintf("normalized type: %s → %s", typeVal, normalized),
-		})
-	}
-}
-
-// normalizeRelationTargets ensures all relation target IDs are snake_case
-// and normalizes relation key names to snake_case.
-func normalizeRelationTargets(raw map[string]interface{}, result *NormalizeResult) {
+// normalizeRelationKeys ensures relation key names are snake_case. Relation
+// *targets* are deliberately left alone: a target is an identity, and rewriting
+// one is a guess about which file was meant.
+func normalizeRelationKeys(raw map[string]interface{}, result *NormalizeResult) {
 	rels := asStringMapIface(raw["relations"])
 	if rels == nil {
 		return
 	}
+	var names []string
+	for name := range rels {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 
-	// Collect renames to avoid modifying map during iteration.
-	type rename struct{ old, new string }
-	var renames []rename
-
-	for relName, targets := range rels {
-		// Normalize relation key name.
+	for _, relName := range names {
 		normRel := ToSnakeCase(relName)
-		if normRel != relName {
-			renames = append(renames, rename{relName, normRel})
-			result.Fixes = append(result.Fixes, Fix{
-				Field:   fmt.Sprintf("relations.%s", relName),
-				Message: fmt.Sprintf("normalized relation key: %s → %s", relName, normRel),
-			})
+		if normRel == relName {
+			continue
 		}
+		targets := rels[relName]
+		delete(rels, relName)
+		if existing, ok := rels[normRel]; ok {
+			merged := map[string]interface{}{normRel: existing}
+			mergeRelMaps(merged, map[string]interface{}{normRel: targets})
+			rels[normRel] = merged[normRel]
+		} else {
+			rels[normRel] = targets
+		}
+		result.Fixes = append(result.Fixes, Fix{
+			Field:   "relations." + relName,
+			Message: fmt.Sprintf("normalized relation key: %s → %s", relName, normRel),
+		})
+	}
+}
 
-		// Normalize target IDs.
-		targetList, ok := targets.([]interface{})
+// dropDangling removes relation targets that name nothing the corpus holds.
+func dropDangling(raw map[string]interface{}, known map[string]bool, result *NormalizeResult) {
+	rels := asStringMapIface(raw["relations"])
+	if rels == nil {
+		return
+	}
+	var names []string
+	for name := range rels {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, relName := range names {
+		list, ok := rels[relName].([]interface{})
 		if !ok {
 			continue
 		}
-		for i, t := range targetList {
+		kept := make([]interface{}, 0, len(list))
+		for _, t := range list {
 			s, ok := t.(string)
-			if !ok {
+			if ok && !known[s] {
+				result.Fixes = append(result.Fixes, Fix{
+					Field:   "relations." + relName,
+					Message: fmt.Sprintf("dropped target %q, which names no entity", s),
+				})
 				continue
 			}
-			normalized := NormalizeEntityID(s)
-			if normalized != s {
-				targetList[i] = normalized
-				result.Fixes = append(result.Fixes, Fix{
-					Field:   fmt.Sprintf("relations.%s", relName),
-					Message: fmt.Sprintf("normalized target: %s → %s", s, normalized),
-				})
-			}
+			kept = append(kept, t)
 		}
+		if len(kept) == 0 {
+			delete(rels, relName)
+			continue
+		}
+		rels[relName] = kept
 	}
-
-	// Apply relation key renames.
-	for _, r := range renames {
-		targets := rels[r.old]
-		delete(rels, r.old)
-		if existing, ok := rels[r.new]; ok {
-			// Merge into existing key.
-			mergeRelMaps(
-				map[string]interface{}{r.new: existing},
-				map[string]interface{}{r.new: targets},
-			)
-		} else {
-			rels[r.new] = targets
-		}
+	if len(rels) == 0 {
+		delete(raw, "relations")
 	}
 }
 
@@ -296,12 +321,4 @@ func containsIface(list []interface{}, val interface{}) bool {
 		}
 	}
 	return false
-}
-
-func removeEmptyDir(dir string) {
-	entries, err := os.ReadDir(dir)
-	if err != nil || len(entries) > 0 {
-		return
-	}
-	os.Remove(dir)
 }

@@ -12,7 +12,7 @@ func TestGetExistingEntity(t *testing.T) {
 
 	e := &store.Entity{
 		ID:         "person:alice",
-		Type:       "Person",
+		Type:       "person",
 		Attributes: map[string]any{"name": "Alice"},
 	}
 	if err := store.WriteEntity(dir, e); err != nil {
@@ -26,8 +26,8 @@ func TestGetExistingEntity(t *testing.T) {
 	if got.ID != "person:alice" {
 		t.Errorf("ID = %q, want person:alice", got.ID)
 	}
-	if got.Type != "Person" {
-		t.Errorf("Type = %q, want Person", got.Type)
+	if got.Type != "person" {
+		t.Errorf("Type = %q, want person", got.Type)
 	}
 	if got.Attributes["name"] != "Alice" {
 		t.Errorf("name = %v, want Alice", got.Attributes["name"])

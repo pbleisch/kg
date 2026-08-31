@@ -3,12 +3,10 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 
+	"github.com/pbleisch/kg/pkg/command"
 	"github.com/pbleisch/kg/pkg/output"
-	"github.com/pbleisch/kg/pkg/schema"
+	"github.com/pbleisch/kg/pkg/query"
 	"github.com/pbleisch/kg/pkg/store"
 	"github.com/spf13/cobra"
 )
@@ -16,115 +14,106 @@ import (
 func init() {
 	cmd := &cobra.Command{
 		Use:   "validate",
-		Short: "Validate all entities against their schemas",
+		Short: "Check the graph: structure is enforced, content is advised",
+		Long: `Report both halves of P3 over every entity file.
+
+Structural findings refuse the load and exit non-zero: an identity two files
+claim, a file whose declared identity disagrees with its location, an illegal
+attribute name, a file that will not parse. There is no flag that suppresses
+one — structure and content must not share a setting.
+
+Content findings are reported and exit 0: an unknown attribute, a schema
+violation, a type with no schema, and a relation target that names nothing. A
+graph under construction is legitimately incomplete.
+
+  kg validate                 report everything
+  kg validate --format json   the same, for a program
+  kg validate --fix           correct id/type to agree with the path and drop
+                              illegal attribute names; moves no file
+  kg validate --fix --fix-dangling
+                              also delete relation targets that name nothing`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fix, _ := cmd.Flags().GetBool("fix")
-			if fix {
-				return runFix(cmd)
+			dangling, _ := cmd.Flags().GetBool("fix-dangling")
+			dryRun, _ := cmd.Flags().GetBool("dry-run")
+			if fix || dangling {
+				opts := command.DefaultRepair()
+				opts.Dangling = dangling
+				opts.DryRun = dryRun
+				return runFix(cmd, opts)
 			}
 			return runValidate(cmd)
 		},
 	}
-	cmd.Flags().Bool("fix", false, "Normalize malformed entities in-place")
+	cmd.Flags().Bool("fix", false, "Rewrite each file to agree with its path and drop illegal attribute names")
+	cmd.Flags().Bool("fix-dangling", false, "With --fix, also delete relation targets that name no entity")
+	cmd.Flags().Bool("dry-run", false, "With --fix, report what would change and write nothing")
 	rootCmd.AddCommand(cmd)
 }
 
 func runValidate(cmd *cobra.Command) error {
-	schemas, err := schema.LoadAllSchemas(cfg.kgDir)
+	rep, err := query.Validate(cfg.kgDir)
 	if err != nil {
-		return fmt.Errorf("loading schemas: %w", err)
-	}
-	entities, err := store.ListEntities(cfg.kgDir)
-	if err != nil {
-		return fmt.Errorf("listing entities: %w", err)
+		return err
 	}
 
-	hasErrors := false
-	for _, e := range entities {
-		s, ok := schemas[e.Type]
-		if !ok {
-			continue
+	w, e := cmd.OutOrStdout(), cmd.ErrOrStderr()
+	switch cfg.format {
+	case output.FormatJSON:
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(rep); err != nil {
+			return err
 		}
-		errs := schema.ValidateEntity(s, e)
-		if len(errs) > 0 {
-			hasErrors = true
-			for _, ve := range errs {
-				fmt.Fprintf(os.Stderr, "%s: %s: %s\n", e.ID, ve.Field, ve.Message)
-			}
+	default:
+		for _, s := range rep.Structural {
+			fmt.Fprintf(e, "error   %s: %s\n", s.Code, s.Error())
+		}
+		for _, a := range rep.Advisories {
+			fmt.Fprintf(e, "warning %s: %s\n", a.Code, a.String())
+		}
+		if !cfg.quiet {
+			fmt.Fprintf(w, "%d files, %d entities: %d structural error(s), %d advisory warning(s)\n",
+				rep.Files, rep.Entities, len(rep.Structural), len(rep.Advisories))
 		}
 	}
-	if hasErrors {
-		return fmt.Errorf("validation failed")
-	}
-	if !cfg.quiet {
-		fmt.Println("all entities valid")
+	if !rep.OK() {
+		// The graph does not load. Returning the library's own error type is
+		// what gets this exit code 2 and a repair hint, and it keeps that
+		// mapping out of this file (P7).
+		return &store.LoadError{Errors: rep.Structural}
 	}
 	return nil
 }
 
-func runFix(cmd *cobra.Command) error {
-	entitiesDir := filepath.Join(cfg.kgDir, "entities")
-
-	var results []*store.NormalizeResult
-	var warnings []string
-	totalFiles := 0
-
-	err := filepath.WalkDir(entitiesDir, func(path string, d os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			if os.IsNotExist(walkErr) && path == entitiesDir {
-				return nil
-			}
-			warnings = append(warnings, fmt.Sprintf("%s: %v", path, walkErr))
-			return nil
-		}
-		if d.IsDir() || !strings.HasSuffix(path, ".yaml") {
-			return nil
-		}
-		totalFiles++
-
-		result, err := store.NormalizeEntityFile(cfg.kgDir, path)
-		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("%s: %v", path, err))
-			return nil
-		}
-		if len(result.Fixes) > 0 {
-			results = append(results, result)
-		}
-		return nil
-	})
+func runFix(cmd *cobra.Command, opts command.RepairOptions) error {
+	res, err := command.Repair(cfg.kgDir, opts)
 	if err != nil {
-		return fmt.Errorf("walking entities: %w", err)
+		return err
 	}
 
+	w := cmd.OutOrStdout()
 	switch cfg.format {
 	case output.FormatJSON:
-		summary := map[string]interface{}{
-			"total_files": totalFiles,
-			"files_fixed": len(results),
-			"warnings":    warnings,
-			"results":     results,
-		}
-		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
-		return enc.Encode(summary)
+		return enc.Encode(res)
 	default:
-		if len(results) == 0 && len(warnings) == 0 {
-			fmt.Fprintf(cmd.OutOrStdout(), "checked %d files, nothing to fix\n", totalFiles)
-			return nil
-		}
-		for _, r := range results {
-			fmt.Fprintf(cmd.OutOrStdout(), "%s:\n", r.EntityID)
+		for _, r := range res.Results {
+			fmt.Fprintf(w, "%s:\n", r.EntityID)
 			for _, f := range r.Fixes {
-				fmt.Fprintf(cmd.OutOrStdout(), "  %s: %s\n", f.Field, f.Message)
-			}
-			if r.Moved {
-				fmt.Fprintf(cmd.OutOrStdout(), "  moved: %s → %s\n", r.OldPath, r.NewPath)
+				fmt.Fprintf(w, "  %s: %s\n", f.Field, f.Message)
 			}
 		}
-		for _, w := range warnings {
-			fmt.Fprintf(os.Stderr, "warning: %s\n", w)
+		for _, u := range res.Unfixable {
+			fmt.Fprintf(cmd.ErrOrStderr(), "unfixed %s: %s\n", u.Code, u.Error())
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "\nfixed %d of %d files\n", len(results), totalFiles)
+		verb := "fixed"
+		if opts.DryRun {
+			verb = "would fix"
+		}
+		fmt.Fprintf(w, "\n%s %d of %d files; %d left for a decision kg will not make\n",
+			verb, res.Changed, res.Files, len(res.Unfixable))
 	}
 	return nil
 }

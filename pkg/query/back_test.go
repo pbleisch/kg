@@ -81,18 +81,18 @@ func TestBackRecursive_FollowsChains(t *testing.T) {
 	kgDir := setupTestKG(t, []*store.Entity{
 		{
 			ID:         "pkg:a",
-			Type:       "package",
+			Type:       "pkg",
 			Attributes: map[string]any{"name": "A"},
 		},
 		{
 			ID:         "pkg:b",
-			Type:       "package",
+			Type:       "pkg",
 			Attributes: map[string]any{"name": "B"},
 			Relations:  map[string][]string{"dependsOn": {"pkg:a"}},
 		},
 		{
 			ID:         "pkg:c",
-			Type:       "package",
+			Type:       "pkg",
 			Attributes: map[string]any{"name": "C"},
 			Relations:  map[string][]string{"dependsOn": {"pkg:b"}},
 		},
@@ -114,12 +114,12 @@ func TestBackRecursive_HandlesCycles(t *testing.T) {
 	kgDir := setupTestKG(t, []*store.Entity{
 		{
 			ID:        "pkg:a",
-			Type:      "package",
+			Type:      "pkg",
 			Relations: map[string][]string{"dependsOn": {"pkg:b"}},
 		},
 		{
 			ID:        "pkg:b",
-			Type:      "package",
+			Type:      "pkg",
 			Relations: map[string][]string{"dependsOn": {"pkg:a"}},
 		},
 	})

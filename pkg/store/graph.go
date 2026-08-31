@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"gopkg.in/yaml.v3"
 )
 
 // Graph is the whole graph held in memory, built by walking the entity files.
@@ -26,9 +24,12 @@ type Graph struct {
 	// incoming maps a target id to the (source, relation) pairs pointing at
 	// it. Built during the walk because that is the only pass over the files.
 	incoming map[string][]Referrer
-	// Warnings names files that could not be read or parsed. A malformed file
-	// is skipped, not fatal: a graph under construction is legitimately
-	// incomplete (P3), and the load half of P3 is increment 4's job.
+	// Warnings names files that could not be read or parsed.
+	//
+	// Deprecated: a file that cannot be read or parsed is now a structural
+	// refusal and LoadGraph returns a *LoadError instead of building a graph
+	// (ADR-0028). The field is kept so that a caller that printed it still
+	// compiles; it is always empty.
 	Warnings []string
 }
 
@@ -39,12 +40,23 @@ type Referrer struct {
 }
 
 // LoadGraph walks <kgDir>/entities and builds the graph in memory.
+//
+// It is a load, so P3's enforced half binds: a file whose declared identity
+// disagrees with its location, an identity two files claim, an illegal
+// attribute name or a file that will not parse refuses the whole graph, and
+// the returned *LoadError names every offending file (ADR-0028). Nothing here
+// stops at the first — a corpus is repaired in one pass or not at all.
+//
+// A dangling relation target does not refuse. It is reported: see
+// [Graph.Dangling].
 func LoadGraph(kgDir string) (*Graph, error) {
 	g := &Graph{
 		byID:     make(map[string]*Entity),
 		byType:   make(map[string][]string),
 		incoming: make(map[string][]Referrer),
 	}
+	var errs []Structural
+	paths := make(map[string][]string)
 
 	entitiesDir := filepath.Join(kgDir, "entities")
 	err := filepath.WalkDir(entitiesDir, func(path string, d os.DirEntry, walkErr error) error {
@@ -52,7 +64,10 @@ func LoadGraph(kgDir string) (*Graph, error) {
 			if os.IsNotExist(walkErr) && path == entitiesDir {
 				return nil // a graph with no entities yet
 			}
-			g.Warnings = append(g.Warnings, fmt.Sprintf("%s: %v", path, walkErr))
+			errs = append(errs, Structural{
+				Code: "unreadable", Files: []string{path},
+				Message: fmt.Sprintf("cannot be walked: %v", walkErr),
+			})
 			return nil
 		}
 		if d.IsDir() || !strings.HasSuffix(path, ".yaml") {
@@ -60,19 +75,31 @@ func LoadGraph(kgDir string) (*Graph, error) {
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			g.Warnings = append(g.Warnings, fmt.Sprintf("%s: read: %v", path, err))
+			errs = append(errs, Structural{
+				Code: "unreadable", Files: []string{path},
+				Message: fmt.Sprintf("cannot be read: %v", err),
+			})
 			return nil
 		}
-		var e Entity
-		if err := yaml.Unmarshal(data, &e); err != nil {
-			g.Warnings = append(g.Warnings, fmt.Sprintf("%s: parse: %v", path, err))
-			return nil
+		e, derr := decodeEntity(kgDir, path, data)
+		if derr != nil {
+			if ss, ok := LoadRefused(derr); ok {
+				errs = append(errs, ss...)
+				return nil
+			}
+			return derr
 		}
-		g.add(&e)
+		paths[e.ID] = append(paths[e.ID], path)
+		g.add(e)
 		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("walking entities: %w", err)
+	}
+	errs = append(errs, Collisions(paths)...)
+	if len(errs) > 0 {
+		SortStructural(errs)
+		return nil, &LoadError{Errors: errs}
 	}
 
 	for t := range g.byType {
@@ -162,6 +189,42 @@ func (g *Graph) Referrers(id string) []string {
 		out = append(out, r.ID)
 	}
 	sort.Strings(out)
+	return out
+}
+
+// A Dangling is one relation whose target is not in the graph.
+type Dangling struct {
+	From     string `json:"from"`
+	Relation string `json:"relation"`
+	To       string `json:"to"`
+}
+
+// Dangling returns every relation pointing at an entity the graph does not
+// hold, ordered by source then relation then target.
+//
+// It is a report, not a refusal (ADR-0028): whether an edge resolves is a
+// property of the corpus at one instant, not of the file holding the edge, and
+// OKF §11 forbids a consumer rejecting a bundle over it. The write boundary
+// refuses the same edge, because a producer asserting it is a different act.
+func (g *Graph) Dangling() []Dangling {
+	var out []Dangling
+	for target, refs := range g.incoming {
+		if _, ok := g.byID[target]; ok {
+			continue
+		}
+		for _, r := range refs {
+			out = append(out, Dangling{From: r.ID, Relation: r.Relation, To: target})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].From != out[j].From {
+			return out[i].From < out[j].From
+		}
+		if out[i].Relation != out[j].Relation {
+			return out[i].Relation < out[j].Relation
+		}
+		return out[i].To < out[j].To
+	})
 	return out
 }
 

@@ -443,50 +443,60 @@ func (s *Server) toolStats(args json.RawMessage) (*query.GraphStats, error) {
 	return query.Stats(s.kgDir)
 }
 
+// validateResult reports both halves of P3, separately.  An agent has to be
+// able to tell "this graph does not load" from "this graph is incomplete", and
+// one error list cannot say both.
 type validateResult struct {
+	// Valid is whether the graph loads.  Warnings do not affect it.
 	Valid         bool          `json:"valid"`
+	TotalFiles    int           `json:"total_files"`
 	TotalEntities int           `json:"total_entities"`
 	ErrorCount    int           `json:"error_count"`
+	WarningCount  int           `json:"warning_count"`
 	Errors        []validateErr `json:"errors"`
+	Warnings      []validateErr `json:"warnings"`
 }
 
 type validateErr struct {
-	EntityID string `json:"entity_id"`
-	Field    string `json:"field"`
-	Message  string `json:"message"`
+	Code     string   `json:"code"`
+	EntityID string   `json:"entity_id,omitempty"`
+	Files    []string `json:"files,omitempty"`
+	Field    string   `json:"field,omitempty"`
+	Message  string   `json:"message"`
 }
 
 func (s *Server) toolValidate(args json.RawMessage) (*validateResult, error) {
-	schemas, err := schema.LoadAllSchemas(s.kgDir)
+	rep, err := query.Validate(s.kgDir)
 	if err != nil {
-		return nil, fmt.Errorf("loading schemas: %w", err)
+		return nil, err
 	}
-	entities, err := store.ListEntities(s.kgDir)
-	if err != nil {
-		return nil, fmt.Errorf("listing entities: %w", err)
+	res := &validateResult{
+		Valid:         rep.OK(),
+		TotalFiles:    rep.Files,
+		TotalEntities: rep.Entities,
+		ErrorCount:    len(rep.Structural),
+		WarningCount:  len(rep.Advisories),
+		Errors:        make([]validateErr, 0, len(rep.Structural)),
+		Warnings:      make([]validateErr, 0, len(rep.Advisories)),
 	}
+	for _, e := range rep.Structural {
+		res.Errors = append(res.Errors, validateErr{
+			Code: e.Code, EntityID: e.ID, Files: e.Files, Field: e.Field, Message: e.Message,
+		})
+	}
+	for _, a := range rep.Advisories {
+		res.Warnings = append(res.Warnings, validateErr{
+			Code: a.Code, EntityID: a.ID, Files: filesOf(a.File), Field: a.Field, Message: a.Message,
+		})
+	}
+	return res, nil
+}
 
-	var errs []validateErr
-	for _, e := range entities {
-		sc, ok := schemas[e.Type]
-		if !ok {
-			continue
-		}
-		for _, ve := range schema.ValidateEntity(sc, e) {
-			errs = append(errs, validateErr{
-				EntityID: e.ID,
-				Field:    ve.Field,
-				Message:  ve.Message,
-			})
-		}
+func filesOf(path string) []string {
+	if path == "" {
+		return nil
 	}
-
-	return &validateResult{
-		Valid:         len(errs) == 0,
-		TotalEntities: len(entities),
-		ErrorCount:    len(errs),
-		Errors:        errs,
-	}, nil
+	return []string{path}
 }
 
 // writeResponse marshals and writes a JSON-RPC response followed by a newline.
@@ -658,7 +668,7 @@ func buildToolDefs() []toolDef {
 		},
 		{
 			Name:        "kg_validate",
-			Description: "Validate all entities against their schemas, returning any constraint violations",
+			Description: "Check the graph. Structural findings (an identity two files claim, a declared id or type that disagrees with the file's location, an illegal attribute name, a file that will not parse) mean it does not load and come back as errors; content findings (unknown attributes, schema violations, relation targets that name nothing) come back as warnings and do not.",
 			InputSchema: jsonSchema{
 				Type:       "object",
 				Properties: map[string]schemaProp{},

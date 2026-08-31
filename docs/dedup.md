@@ -1,25 +1,99 @@
-# Deduplication Guide
+# Entity Resolution and Deduplication Guide
 
-kg supports finding and merging duplicate entities using vector similarity
-on embedding fields. Two complementary tools:
+Finding entities that are the same thing, and merging the ones that are. Three
+commands, and the order matters:
 
-- **`kg dedup`** — find and merge duplicates in an existing graph
-- **`kg apply --on-conflict dedup`** — deduplicate during manifest ingest
+- **`kg resolve`** — one whole-corpus pass over a complete index, reporting every
+  pair that may be one entity. It merges nothing.
+- **`kg dedup`** — cluster one type by similarity and, with `--apply`, merge.
+- **`kg merge`** — fold one named entity into another.
 
-Both require [embeddings](embedding.md) to be configured and generated.
+All three need [embeddings](embedding.md) configured and a sidecar built by
+`kg sync`.
+
+**`kg apply --on-conflict dedup` is gone.** Resolution used to happen inside the
+write boundary, once per batch, against whatever the vector sidecar held — which
+was the state *before* the batch, because `kg sync` ran after the apply. It was
+therefore permanently one document behind, it ran the embedding command on the
+critical path of every write, and it merged two entities on a threshold with
+nobody looking. Resolution is a separate pass now. A pipeline that passed
+`--on-conflict dedup`, `--dedup-fields` or `--dedup-threshold` drops them and
+runs `kg sync && kg resolve` after ingest instead.
 
 ## Quick Start
 
 ```bash
-# Find duplicates (dry-run by default — safe to explore)
+# Every pair in the whole corpus that may be one entity. Reports; merges nothing.
+kg resolve
+
+# The closest 50 above 0.95, as JSON, for an agent to adjudicate
+kg resolve --threshold 0.95 --limit 50 --json
+
+# Only pairs whose types differ — the ones a per-type dedup can never see
+kg resolve --cross-type
+
+# Cluster and merge within one type (dry-run by default)
 kg dedup concept --threshold 0.85 --fields name,description
-
-# Actually merge them
 kg dedup concept --threshold 0.85 --fields name --apply
-
-# Deduplicate during ingest
-kg apply manifest.yaml --on-conflict dedup --dedup-fields name --dedup-threshold 0.85
 ```
+
+## `kg resolve`
+
+One pass over the whole corpus, comparing every embedded field against every
+other entity's *same* field, and reporting the pairs at or above a threshold.
+
+### Usage
+
+```bash
+kg resolve [--threshold <0.0-1.0>] [--fields <f1,f2>] [--limit <n>]
+           [--same-type | --cross-type]
+```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--threshold` | 0.90 | Cosine score at or above which a pair is a candidate |
+| `--fields` | the embedder's | Comma-separated embedded fields to compare |
+| `--limit` | 0 (all) | Report at most this many pairs, highest score first |
+| `--same-type` | — | Only pairs whose types agree |
+| `--cross-type` | — | Only pairs whose types differ |
+
+### What it refuses
+
+`kg resolve` answers from a complete index or not at all, which is the whole
+point of moving it out of the apply:
+
+- **A corpus that does not load** is refused by the load, before any comparison.
+  An identity two files claim has one vector row for two entities, and resolving
+  against that is resolving against a corpus that is not the one on disk. Run
+  `kg validate` and `kg validate --fix`.
+- **An entity with text and no vector** is counted and named, and the pass
+  refuses rather than quietly comparing the rest. Run `kg sync`.
+
+### What it will not do
+
+It does not merge. Deciding that two names are one thing is judgement, and a
+threshold is not judgement — the corpus has `concept:match_three` and
+`genre:match_three` scoring 1.0000, and whether those are one entity is a
+question about the graph's ontology, not about cosine. The output is the list a
+person or an agent adjudicates; `kg merge` applies what they decide.
+
+### Cost
+
+Exact, all-pairs, brute force, in pure Go — there is no CGO in kg and no
+approximate index to keep in sync (P2, ADR-0027). Measured on the 27,158-file
+GDKB corpus, one embedded field, 18 cores:
+
+| | |
+|---|---|
+| whole-corpus load | 0.85 s |
+| normalize and pack 27,079 vectors of 384 | 0.02 s |
+| all-pairs cosine, 366M comparisons | 2.6 s |
+| **end to end** | **3.9 s** |
+
+It found 862 pairs at cosine ≥ 0.90 — 464 same-type and 398 cross-type. The
+cross-type ones were never in the reach of a per-type `kg dedup` at all.
 
 ## `kg dedup`
 
@@ -45,7 +119,7 @@ kg dedup <type> --threshold <0.0-1.0> --fields <field1,field2> [flags]
 ### How It Works
 
 1. Loads all entities of the specified type
-2. Extracts `<field>_embedding` vectors for each entity
+2. Reads each entity's vector for that field from the sidecar (`kg sync` builds it)
 3. Computes pairwise cosine similarity across all entity pairs
 4. Groups duplicates into clusters using union-find (transitive: if A≈B and B≈C, all three cluster together)
 5. Picks the canonical entity per cluster (lowest ID lexicographically)
@@ -85,72 +159,37 @@ kg dedup concept --threshold 0.85 --fields name --cross-type
 
 Always run without `--apply` first to review matches.
 
-## `kg apply --on-conflict dedup`
+## `kg apply --on-conflict dedup` — removed
 
-Similarity-aware ingest: checks incoming entities against existing ones
-before creating them.
+`kg apply` has no dedup mode, and `--dedup-fields` and `--dedup-threshold` are
+gone with it. The write boundary writes; it does not decide that two entities
+are one.
 
-### Usage
+What it did, and why each part was a problem:
 
-```bash
-kg apply manifest.yaml --on-conflict dedup --dedup-fields <fields> [--dedup-threshold <0.0-1.0>]
-```
+1. It embedded the incoming entities at the boundary — a subprocess on the
+   critical path of every write, and 67.6 hours of the original corpus build.
+2. It compared them against the vector sidecar *as it stood before the batch*,
+   because `kg sync` ran after the apply. Every run was one document behind, and
+   the pairs it could not see were the ones it had just created.
+3. It merged on a threshold, silently, and rewrote later `link` actions in the
+   same manifest to point at whatever it merged into.
 
-### Flags
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--on-conflict dedup` | — | Enable similarity-aware conflict resolution |
-| `--dedup-fields` | — | Embedding fields to compare (required with dedup) |
-| `--dedup-threshold` | 0.85 | Similarity threshold |
-
-### How It Works
-
-For each `create` or `upsert` action in the manifest:
-
-1. Extracts or computes embeddings for the new entity's dedup fields
-2. Compares against all existing entities of the same type
-3. If a match above threshold is found: merges the new entity into the existing one
-4. If no match: creates normally
-5. Rewrites any subsequent `link` actions in the same manifest to use the deduplicated ID
-
-This lets LLM pipelines ship raw output directly to `kg apply` without a
-separate resolve/dedup phase.
-
-### Example
-
-```yaml
-# manifest.yaml
-version: 1
-actions:
-  - action: upsert
-    entity:
-      id: concept:game_feel_design
-      type: concept
-      attributes:
-        name: "Game Feel in Design"
-        description: "The tactile quality of game interactions"
-  - action: link
-    from: concept:game_feel_design
-    rel: related_to
-    to: concept:player_experience
-```
+**What to run instead.** Ingest, then resolve:
 
 ```bash
-kg apply manifest.yaml --on-conflict dedup --dedup-fields name,description --dedup-threshold 0.85
+kg apply manifest.yaml            # writes; refuses a dangling relation as before
+kg sync                           # brings the sidecar level
+kg resolve --json > pairs.json    # every candidate, over the complete index
 ```
 
-If `concept:game_feel` already exists with similarity 0.91, the output:
-```
-  dedup: concept:game_feel_design → concept:game_feel
-1 action(s) deduped
-```
+and adjudicate `pairs.json`, applying the decisions with `kg merge`.
 
-The link action is automatically rewritten to use `concept:game_feel` instead.
 
 ## Merge Semantics
 
-Both tools use `kg merge` internally:
+`kg dedup --apply` uses `kg merge` internally, and it is what you run by hand on
+a pair `kg resolve` reported and a human adjudicated:
 
 - Target (canonical) entity attributes are preserved; source attributes fill gaps
 - Outgoing relations are unioned (no duplicates)

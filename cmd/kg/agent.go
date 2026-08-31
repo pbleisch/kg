@@ -292,7 +292,8 @@ const skillTemplate = `---
 name: kg
 description: >
   Use the kg CLI to query and mutate the knowledge graph.
-  Available commands: create, get, find, set, delete, link, unlink, path, back, describe, types, validate.
+  Available commands: create, get, find, set, delete, link, unlink, path, back, describe, types,
+  validate, resolve.
 ---
 
 # Using kg (Knowledge Graph CLI)
@@ -311,8 +312,22 @@ kg link <from> <rel> <to> --dir={{.KGDir}}    # Create relation
 kg unlink <from> <rel> <to> --dir={{.KGDir}}  # Remove relation
 kg path <type:id> <rel> --dir={{.KGDir}}      # Traverse forward
 kg back <type:id> --dir={{.KGDir}}            # Find reverse refs
-kg validate --dir={{.KGDir}}                  # Validate all entities
+kg validate --dir={{.KGDir}}                  # Structure fails, content warns
+kg validate --fix --dir={{.KGDir}}            # Repair id/type and illegal names
+kg resolve --dir={{.KGDir}}                   # Pairs that may be one entity
 ` + "```" + `
+
+## What a load refuses
+
+An entity's identity is where its file sits: ` + "`entities/<type>/<local>.yaml`" + ` is
+` + "`<type>:<local>`" + `. Four things refuse the whole graph, and no flag suppresses
+them: an identity two files claim, a declared ` + "`id:`" + ` or ` + "`type:`" + ` that
+disagrees with the path, an attribute name outside ` + "`[a-z][a-z0-9_]*`" + `, and a
+file that will not parse. ` + "`kg validate --fix`" + ` repairs the last three classes
+in place and moves no file.
+
+Everything else is a warning and the graph still loads — an unknown attribute, a
+schema violation, and a relation target that names nothing.
 
 ## Output Formats
 

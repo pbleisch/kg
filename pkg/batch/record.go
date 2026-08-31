@@ -2,7 +2,6 @@ package batch
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/pbleisch/kg/pkg/store"
@@ -132,13 +131,21 @@ func (r *Record) normalize() {
 }
 
 // A ConflictPolicy says what to do when a create hits an existing identity.
+//
+// There is no "dedup" policy.  Entity resolution used to happen here, once per
+// batch, against whatever the vector sidecar happened to hold — which was the
+// state before this batch, because `kg sync` ran after the apply.  It was
+// therefore always one document behind, it embedded at the write boundary
+// (a subprocess per batch, on the critical path of every write), and it merged
+// two entities on a threshold with nobody looking.  Resolution is now a
+// separate whole-corpus pass over a complete index: see [command.Resolve] and
+// `kg resolve`.
 type ConflictPolicy string
 
 const (
 	ConflictFail  ConflictPolicy = "fail"
 	ConflictSkip  ConflictPolicy = "skip"
 	ConflictMerge ConflictPolicy = "merge"
-	ConflictDedup ConflictPolicy = "dedup"
 )
 
 // An ErrorPolicy says what to do when a record fails while being applied.
@@ -154,11 +161,9 @@ const (
 // Options are the knobs a producer may turn.  The zero value is the safe one:
 // conflicts fail, errors fail, nothing is written that was not asked for.
 type Options struct {
-	OnConflict     ConflictPolicy
-	OnError        ErrorPolicy
-	DedupFields    []string
-	DedupThreshold float64
-	DryRun         bool
+	OnConflict ConflictPolicy
+	OnError    ErrorPolicy
+	DryRun     bool
 }
 
 func (o *Options) normalize() error {
@@ -169,31 +174,14 @@ func (o *Options) normalize() error {
 		o.OnError = ErrorFail
 	}
 	switch o.OnConflict {
-	case ConflictFail, ConflictSkip, ConflictMerge, ConflictDedup:
+	case ConflictFail, ConflictSkip, ConflictMerge:
 	default:
-		return fmt.Errorf("batch: invalid on-conflict %q (fail, skip, merge, dedup)", o.OnConflict)
+		return fmt.Errorf("batch: invalid on-conflict %q (fail, skip, merge)", o.OnConflict)
 	}
 	switch o.OnError {
 	case ErrorFail, ErrorWarn, ErrorSkip:
 	default:
 		return fmt.Errorf("batch: invalid on-error %q (fail, warn, skip)", o.OnError)
-	}
-	fields := o.DedupFields[:0:0]
-	for _, f := range o.DedupFields {
-		if f = strings.TrimSpace(f); f != "" {
-			fields = append(fields, f)
-		}
-	}
-	sort.Strings(fields)
-	o.DedupFields = fields
-	if o.OnConflict == ConflictDedup && len(o.DedupFields) == 0 {
-		return fmt.Errorf("batch: on-conflict dedup needs at least one dedup field")
-	}
-	if o.DedupThreshold == 0 {
-		o.DedupThreshold = 0.85
-	}
-	if o.DedupThreshold < 0 || o.DedupThreshold > 1 {
-		return fmt.Errorf("batch: dedup threshold %v is outside 0.0–1.0", o.DedupThreshold)
 	}
 	return nil
 }

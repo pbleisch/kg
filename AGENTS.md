@@ -21,6 +21,12 @@ CLI composes library calls and adds only presentation — it must not hold valid
 defaults, or normalization the library lacks, and it must expose every operation the
 library does. Read P7 before adding behaviour under `cmd/`.
 
+P3's two halves were settled on 2026-08-31: [ADR-0028](decisions/0028-load-time-structural-enforcement.md)
+says what a load refuses and what it merely reports, and
+[ADR-0029](decisions/0029-path-derived-identity.md) settles identity as path-derived.
+Read both before touching a read path, the write boundary, or anything that walks the
+corpus.
+
 [docs/increments.md](docs/increments.md) is the current plan — numbered increments with
 goals, deliverables and done-conditions, covering both kg and the GDKB ingestion
 pipeline, plus what is deliberately not being built and which increment forces each of
@@ -34,13 +40,35 @@ usable signal.** Every run on `main` since v0.9.3 fails at the `Test` step (Linu
 the suite passes on macOS), and as of 2026-08 GitHub Actions will not start jobs on this
 account at all for billing reasons.
 
+## Identity, and what a load refuses
+
+**A file's location is its identity** (ADR-0029): `entities/<type>/<local>.yaml` is
+`<type>:<local>`, percent-decoded. `id:` and `type:` stay in the file as a *checked
+echo* — a loader fills them in when they are absent and refuses when they disagree.
+`store.IdentityAt` derives one; `store.CheckEntityFile` and `store.CheckPath` check one.
+
+Every read enforces P3's load half and returns a `*store.LoadError` naming every
+offending file — use `store.LoadRefused(err)` to branch on it, and never treat a refusal
+as a miss. **`store.ListEntityFiles` is the one read that enforces nothing**, paired with
+`store.RewriteEntityFile`: a corpus that will not load must still be walkable by the
+tool that repairs it, and by `query.Validate`, which is the report that says what is
+wrong with it. `store.WriteEntity` and `store.WriteEntityAt` refuse what a load refuses,
+so kg cannot write a file it will not read back.
+
+What fails: an identity two files claim, a declared `id:`/`type:` that disagrees with
+the path, an attribute name outside `[a-z][a-z0-9_]*`, a filename kg would not have
+written, a file that will not parse. What is reported: unknown attributes, schema
+violations, and **dangling relation targets** — refused at the write boundary, reported
+by a load, and ADR-0028 has the argument for the asymmetry. There is no flag that moves
+a rule between the two; P3 forbids them sharing a setting.
+
 ## Reading, and the derived data
 
 There is no index and no daemon. A read opens files, and which files depends on the
 read: `store.ReadEntity` for a point read, `store.FindByType` for a typed find,
 `store.Loader` for traversal (reads as it reaches, caches what it read), and
 `store.LoadGraph` — a whole-corpus walk building ids, types and the reverse-edge map —
-only for the reads that genuinely need every entity: `back`, `stats`, `validate`, merge.
+only for the reads that genuinely need every entity: `back`, `stats`, `resolve`, merge.
 Do not reach for `LoadGraph` in a read that does not need it; that is how a cheap read
 stops being cheap.
 
@@ -74,6 +102,13 @@ what each file held so `--on-error=fail` can put the graph back.
 Two behaviours changed with it and will surprise: `command.Link` no longer
 mints a typeless stub for a missing source, and `kg apply` defaults to
 `--on-error=fail`. Both were how entities nobody submitted got into the graph.
+
+**Entity resolution is not part of a write.** `--on-conflict dedup`, `--dedup-fields`
+and `--dedup-threshold` were deleted in increment 4: they embedded on the critical path
+of every write and compared against a sidecar `kg sync` refreshed *after* the apply, so
+resolution was permanently one document behind. `command.Resolve` / `kg resolve` is one
+whole-corpus pass over a **complete** index — it refuses a corpus that does not load and
+refuses an entity whose text has no vector — and it reports pairs and merges nothing.
 
 Writes no longer sync anything — there is nothing to sync. A batch does refresh the
 vector sidecar for the entities it touched, when an embedder is configured.
@@ -112,8 +147,9 @@ Do not repeat what the codebase already shows; point to the authoritative file o
 Prefer rewriting or pruning existing entries over appending new ones.
 When updating this file, preserve this bar for all agents and keep entries concise.
 
-One trap worth knowing: hundreds of files in the real corpus declare an `id` that
-disagrees with their path (PRINCIPLES.md violation #3, increment 4's job). Anything that
-walks the corpus and rewrites what it finds must write back to the file it read —
-`store.ListEntityFiles` and `store.WriteEntityAt` — not to `EntityPath(id)`, which skips
-one file and overwrites another.
+One trap worth knowing: 265 files in the real corpus declare an `id` that disagrees
+with their path. Anything that walks the corpus and rewrites what it finds must write
+back to the file it read — `store.ListEntityFiles` and `store.RewriteEntityFile` — not
+to `EntityPath(id)`, which skips one file and overwrites another. `kg validate --fix`
+does this correctly and moves no file; the version before increment 4 moved all 265,
+which is the trap performed deliberately.

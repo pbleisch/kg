@@ -43,9 +43,12 @@ A git-friendly knowledge graph system designed for LLM agents and CLI workflows.
 
 ### Storage Model
 
-The YAML files are the graph. Reads open them: one file for a point read, one directory
-for a typed find, and a whole-graph walk only for the reads that need every entity
-(`back`, `stats`, `validate`).
+The YAML files are the graph, and **a file's location is its identity**: the entity at
+`.kg/entities/<type>/<local-id>.yaml` is `<type>:<local-id>` (ADR-0029). Reads open the
+files: one file for a point read, one directory for a typed find, and a whole-graph walk
+only for the reads that need every entity (`back`, `stats`, `resolve`, merge).
+`kg validate` walks them too, and is the one read that does not refuse a corpus that
+breaks the rules — it is the read that says what is wrong with it.
 
 The one derived artifact is the vector sidecar, which `kg similar` scans and `kg sync`
 rebuilds. Delete `.kg/.cache/` and `git status` stays clean.
@@ -463,9 +466,20 @@ Find entities similar to the given entity using vector embeddings.
 $ kg similar person:alice --limit 5
 ```
 
+#### `kg resolve`
+
+One whole-corpus pass over a complete index, reporting every pair of entities
+that may be the same thing. It merges nothing: deciding that two names are one
+thing is judgement. See [dedup.md](dedup.md).
+
+```bash
+$ kg resolve --threshold 0.90 --limit 20
+```
+
 #### `kg dedup <type>`
 
-Find potential duplicates within a type using embedding similarity.
+Find potential duplicates within a type using embedding similarity, and with
+`--apply`, merge them.
 
 ```bash
 $ kg dedup person
@@ -482,16 +496,26 @@ $ kg embed            # embed all entities
 
 #### `kg validate`
 
-Check YAML files against schemas.
+Check the graph. **Structure is enforced and content is advised** (P3), and the
+two come back separately: structural findings mean the graph does not load and
+exit the command non-zero; content findings are reported and exit 0.
 
 ```bash
 $ kg validate
 ```
-```toon
-valid: true
-entities: 47
-warnings[1]: person:dave missing recommended attribute 'email'
 ```
+error   id_disagreement: .kg/entities/person/dave.yaml: declares id "person:david"
+        but its location says "person:dave"; the path is the identity (ADR-0029)
+warning missing_attribute: person:eve: attributes.email: required attribute is missing
+warning dangling_relation: person:eve: knows → "person:nobody" names no entity
+48 files, 48 entities: 1 structural error(s), 2 advisory warning(s)
+```
+
+`kg validate --fix` repairs the classes a rule can repair — it rewrites `id:`
+and `type:` to agree with the file's location and drops attribute names outside
+`[a-z][a-z0-9_]*` — and moves no file. Add `--fix-dangling` to also delete
+relation targets that name nothing; that deletes an assertion, so it is opt-in.
+See [decisions/0028](../decisions/0028-load-time-structural-enforcement.md).
 
 ### Output Formats
 

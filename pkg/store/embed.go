@@ -365,7 +365,7 @@ func StripLegacyEmbeddings(kgDir string, dryRun bool) (changed int, freed int64,
 		// Written back to the file it came from, not to the path its id
 		// implies: on this corpus those differ for hundreds of files, and
 		// writing by id skips one file and overwrites another.
-		if err := WriteEntityAt(f.Path, f.Entity); err != nil {
+		if err := RewriteEntityFile(f.Path, f.Entity); err != nil {
 			return changed, freed, err
 		}
 		if statErr == nil {
