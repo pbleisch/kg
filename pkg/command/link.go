@@ -2,36 +2,21 @@ package command
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/pbleisch/kg/pkg/store"
 )
 
 // Link adds targetID to the relation list on sourceID, avoiding duplicates.
-// If the source entity doesn't exist on disk, a stub entity is created
-// automatically (common in LLM pipelines where links precede entity creation).
+//
+// A missing source is an error.  This used to mint a typeless stub entity
+// instead, "common in LLM pipelines where links precede entity creation" — and
+// that is precisely how a graph acquires entities nobody submitted.  Callers
+// come through the batch boundary, which refuses a relation whose ends do not
+// resolve before any write happens.
 func Link(kgDir, sourceID, relation, targetID string) error {
 	e, err := store.ReadEntity(kgDir, sourceID)
 	if err != nil {
-		// Source doesn't exist — create a stub entity.
-		parts := strings.SplitN(sourceID, ":", 2)
-		typeName := ""
-		if len(parts) == 2 {
-			typeName = parts[0]
-		}
-		e = &store.Entity{
-			ID:         sourceID,
-			Type:       typeName,
-			Attributes: map[string]any{},
-			Relations:  map[string][]string{relation: {targetID}},
-		}
-		if err := store.WriteEntity(kgDir, e); err != nil {
-			return fmt.Errorf("creating stub entity: %w", err)
-		}
-		if err := store.Sync(kgDir); err != nil {
-			return fmt.Errorf("syncing index: %w", err)
-		}
-		return nil
+		return fmt.Errorf("linking from %q: source does not exist", sourceID)
 	}
 
 	if e.Relations == nil {

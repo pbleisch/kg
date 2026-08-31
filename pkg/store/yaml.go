@@ -60,6 +60,8 @@ func WriteEntity(kgDir string, e *Entity) error {
 		return fmt.Errorf("invalid entity ID %q", e.ID)
 	}
 
+	journalNote(path)
+
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("creating directory for entity %q: %w", e.ID, err)
 	}
@@ -81,6 +83,8 @@ func DeleteEntity(kgDir, id string) error {
 	if path == "" {
 		return fmt.Errorf("invalid entity ID %q", id)
 	}
+
+	journalNote(path)
 
 	if err := os.Remove(path); err != nil {
 		return fmt.Errorf("deleting entity %q: %w", id, err)

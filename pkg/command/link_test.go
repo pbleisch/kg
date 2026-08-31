@@ -44,6 +44,19 @@ func TestLinkAvoidsDuplicates(t *testing.T) {
 	}
 }
 
+func TestLinkRefusesMissingSource(t *testing.T) {
+	kgDir := setupKGDir(t)
+
+	// A missing source used to become a typeless stub entity.  It is now an
+	// error: the store does not acquire entities nobody submitted.
+	if err := Link(kgDir, "person:ghost", "worksOn", "project:atlas"); err == nil {
+		t.Fatal("expected an error linking from a nonexistent source")
+	}
+	if _, err := store.ReadEntity(kgDir, "person:ghost"); err == nil {
+		t.Fatal("a stub entity was created for the missing source")
+	}
+}
+
 func TestUnlinkRemovesRelation(t *testing.T) {
 	kgDir := setupKGDir(t)
 	createTestEntity(t, kgDir, "person:charlie")

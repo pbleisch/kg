@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/pbleisch/kg/pkg/output"
@@ -61,3 +62,7 @@ func main() {
 		os.Exit(exitCode)
 	}
 }
+
+// sortStrings keeps presentation deterministic without pulling sort into every
+// command file.
+func sortStrings(ss []string) { sort.Strings(ss) }

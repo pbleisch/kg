@@ -32,6 +32,28 @@ Every run on `main` since v0.9.3 fails at the `Test` step (Linux-only; the suite
 on macOS), and as of 2026-08 GitHub Actions will not start jobs on this account at all
 for billing reasons.
 
+## The write boundary
+
+`pkg/batch` is the only way anything becomes an entity. `batch.Apply` takes an
+[`Envelope`](pkg/batch/envelope.go) — version plus idempotency key, buildable
+only through `NewEnvelope` — and typed records. `kg apply`, the write commands
+(`create`, `set`, `link`, `unlink`, `delete`) and the MCP write tools are
+producers that enter through it; none holds validation, defaulting or
+normalization of its own (P7).
+
+Structure is refused, content is warned (P3): illegal attribute names, a type
+that disagrees with its id, an identity two records claim, a relation whose end
+resolves to nothing. **A refused batch writes nothing at all** — validation runs
+over the whole batch first, and while records apply a `store.Journal` remembers
+what each file held so `--on-error=fail` can put the graph back.
+
+Two behaviours changed with it and will surprise: `command.Link` no longer
+mints a typeless stub for a missing source, and `kg apply` defaults to
+`--on-error=fail`. Both were how entities nobody submitted got into the graph.
+
+Applying one idempotency key twice applies it once — the ledger is
+`.kg/.cache/apply/<key>.json`.
+
 ## Landing the Plane (Session Completion)
 
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.

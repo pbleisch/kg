@@ -9,7 +9,7 @@ import (
 	"io"
 	"sort"
 
-	"github.com/pbleisch/kg/pkg/command"
+	"github.com/pbleisch/kg/pkg/batch"
 	"github.com/pbleisch/kg/pkg/query"
 	"github.com/pbleisch/kg/pkg/schema"
 	"github.com/pbleisch/kg/pkg/store"
@@ -308,7 +308,7 @@ func (s *Server) toolCreate(args json.RawMessage) (*store.Entity, error) {
 	if err := json.Unmarshal(args, &p); err != nil {
 		return nil, fmt.Errorf("invalid arguments: %w", err)
 	}
-	return command.Create(s.kgDir, p.Type, p.LocalID, p.Attributes)
+	return batch.CreateEntity(s.kgDir, p.Type, p.LocalID, p.Attributes, false)
 }
 
 func (s *Server) toolSet(args json.RawMessage) (*store.Entity, error) {
@@ -319,7 +319,7 @@ func (s *Server) toolSet(args json.RawMessage) (*store.Entity, error) {
 	if err := json.Unmarshal(args, &p); err != nil {
 		return nil, fmt.Errorf("invalid arguments: %w", err)
 	}
-	return command.Set(s.kgDir, p.ID, p.Attributes)
+	return batch.SetAttrs(s.kgDir, p.ID, p.Attributes)
 }
 
 type deleteResult struct {
@@ -333,7 +333,7 @@ func (s *Server) toolDelete(args json.RawMessage) (*deleteResult, error) {
 	if err := json.Unmarshal(args, &p); err != nil {
 		return nil, fmt.Errorf("invalid arguments: %w", err)
 	}
-	if err := command.Delete(s.kgDir, p.ID); err != nil {
+	if err := batch.DeleteRef(s.kgDir, p.ID); err != nil {
 		return nil, err
 	}
 	return &deleteResult{Deleted: true}, nil
@@ -352,7 +352,7 @@ func (s *Server) toolLink(args json.RawMessage) (*linkResult, error) {
 	if err := json.Unmarshal(args, &p); err != nil {
 		return nil, fmt.Errorf("invalid arguments: %w", err)
 	}
-	if err := command.Link(s.kgDir, p.SourceID, p.Relation, p.TargetID); err != nil {
+	if err := batch.LinkRef(s.kgDir, p.SourceID, p.Relation, p.TargetID); err != nil {
 		return nil, err
 	}
 	return &linkResult{OK: true}, nil
@@ -367,7 +367,7 @@ func (s *Server) toolUnlink(args json.RawMessage) (*linkResult, error) {
 	if err := json.Unmarshal(args, &p); err != nil {
 		return nil, fmt.Errorf("invalid arguments: %w", err)
 	}
-	if err := command.Unlink(s.kgDir, p.SourceID, p.Relation, p.TargetID); err != nil {
+	if err := batch.UnlinkRef(s.kgDir, p.SourceID, p.Relation, p.TargetID); err != nil {
 		return nil, err
 	}
 	return &linkResult{OK: true}, nil

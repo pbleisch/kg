@@ -347,11 +347,11 @@ func TestEmbedInitScriptSyntax(t *testing.T) {
 	}
 }
 
-func TestApplyOnErrorWarn(t *testing.T) {
+func TestApplyRefusesDanglingLink(t *testing.T) {
 	dir := initKG(t)
 
-	// Create foo so that the link from nonexistent -> foo can succeed
-	// (link auto-creates stub for nonexistent source).
+	// A link from an entity nothing declares is the corruption class this
+	// boundary exists to stop: it used to mint a typeless stub and carry on.
 	manifest := `
 version: 1
 actions:
@@ -367,22 +367,80 @@ actions:
 	mPath := filepath.Join(t.TempDir(), "manifest.yaml")
 	os.WriteFile(mPath, []byte(manifest), 0o644)
 
-	// With --on-error=warn, all actions should proceed.
+	out, err := runCmd(t, "apply", mPath, "--on-error=warn", "--dir="+dir)
+	if err == nil {
+		t.Fatalf("expected the batch to be refused, got: %s", out)
+	}
+	if !strings.Contains(err.Error(), "concept:nonexistent") {
+		t.Errorf("the refusal must name the unresolved reference, got: %v", err)
+	}
+
+	// The batch is one transaction: the valid records did not land either.
+	if _, err := runCmd(t, "get", "concept:foo", "--dir="+dir); err == nil {
+		t.Error("concept:foo should NOT exist after a refused batch")
+	}
+	if _, err := runCmd(t, "get", "concept:bar", "--dir="+dir); err == nil {
+		t.Error("concept:bar should NOT exist after a refused batch")
+	}
+}
+
+func TestApplyWarnKeepsGoing(t *testing.T) {
+	dir := initKG(t)
+
+	// A delete of something that is not there passes structural validation
+	// and fails when applied; --on-error=warn carries on past it.
+	manifest := `
+version: 1
+actions:
+  - action: upsert
+    entity: { id: "concept:foo", type: concept, attributes: { name: Foo } }
+  - action: delete
+    target: "concept:not_there"
+  - action: upsert
+    entity: { id: "concept:bar", type: concept, attributes: { name: Bar } }
+`
+	mPath := filepath.Join(t.TempDir(), "manifest.yaml")
+	os.WriteFile(mPath, []byte(manifest), 0o644)
+
 	out, err := runCmd(t, "apply", mPath, "--on-error=warn", "--dir="+dir)
 	if err != nil {
 		t.Fatalf("apply --on-error=warn: %v\noutput: %s", err, out)
 	}
-
-	// Foo should exist.
-	_, err = runCmd(t, "get", "concept:foo", "--dir="+dir)
-	if err != nil {
-		t.Error("concept:foo should exist")
+	for _, id := range []string{"concept:foo", "concept:bar"} {
+		if _, err := runCmd(t, "get", id, "--dir="+dir); err != nil {
+			t.Errorf("%s should exist after --on-error=warn", id)
+		}
 	}
+}
 
-	// Bar should also exist (was not skipped).
-	_, err = runCmd(t, "get", "concept:bar", "--dir="+dir)
+func TestApplyIsIdempotent(t *testing.T) {
+	dir := initKG(t)
+	manifest := `
+version: 1
+idempotency_key: fixed.key
+actions:
+  - action: upsert
+    entity: { id: "concept:foo", type: concept, attributes: { name: Foo } }
+`
+	mPath := filepath.Join(t.TempDir(), "manifest.yaml")
+	os.WriteFile(mPath, []byte(manifest), 0o644)
+
+	if _, err := runCmd(t, "apply", mPath, "--dir="+dir); err != nil {
+		t.Fatalf("first apply: %v", err)
+	}
+	before, err := os.ReadFile(filepath.Join(dir, "entities", "concept", "foo.yaml"))
 	if err != nil {
-		t.Error("concept:bar should exist after --on-error=warn")
+		t.Fatalf("reading entity: %v", err)
+	}
+	if _, err := runCmd(t, "apply", mPath, "--dir="+dir); err != nil {
+		t.Fatalf("second apply: %v", err)
+	}
+	after, err := os.ReadFile(filepath.Join(dir, "entities", "concept", "foo.yaml"))
+	if err != nil {
+		t.Fatalf("reading entity: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Error("applying the same batch twice changed the graph")
 	}
 }
 
@@ -414,24 +472,20 @@ actions:
 	}
 }
 
-func TestLinkAutoCreatesSource(t *testing.T) {
+func TestLinkRefusesMissingSource(t *testing.T) {
 	dir := initKG(t)
 
 	// Create the target entity.
-	_, err := runCmd(t, "create", "concept", "target", "name=Target", "--dir="+dir)
-	if err != nil {
+	if _, err := runCmd(t, "create", "concept", "target", "name=Target", "--dir="+dir); err != nil {
 		t.Fatalf("create target: %v", err)
 	}
 
-	// Link from a nonexistent source — should auto-create stub.
-	_, err = runCmd(t, "link", "concept:source", "related_to", "concept:target", "--dir="+dir)
-	if err != nil {
-		t.Fatalf("link: %v", err)
+	// Linking from an entity nobody submitted used to auto-create a typeless
+	// stub.  It is refused now, and no stub is left behind.
+	if _, err := runCmd(t, "link", "concept:source", "related_to", "concept:target", "--dir="+dir); err == nil {
+		t.Fatal("expected link from a nonexistent source to be refused")
 	}
-
-	// Source should now exist as a stub.
-	_, err = runCmd(t, "get", "concept:source", "--dir="+dir)
-	if err != nil {
-		t.Fatalf("get source after auto-create: %v", err)
+	if _, err := runCmd(t, "get", "concept:source", "--dir="+dir); err == nil {
+		t.Fatal("a stub entity was created for the missing source")
 	}
 }

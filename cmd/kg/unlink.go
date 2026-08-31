@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/pbleisch/kg/pkg/command"
+	"github.com/pbleisch/kg/pkg/batch"
 	"github.com/pbleisch/kg/pkg/store"
 	"github.com/spf13/cobra"
 )
@@ -17,7 +17,7 @@ func init() {
 			src := store.NormalizeEntityID(args[0])
 			rel := store.NormalizeRelation(args[1])
 			tgt := store.NormalizeEntityID(args[2])
-			if err := command.Unlink(cfg.kgDir, src, rel, tgt); err != nil {
+			if err := batch.UnlinkRef(cfg.kgDir, src, rel, tgt); err != nil {
 				return err
 			}
 			if !cfg.quiet {

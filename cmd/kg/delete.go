@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/pbleisch/kg/pkg/command"
+	"github.com/pbleisch/kg/pkg/batch"
 	"github.com/pbleisch/kg/pkg/store"
 	"github.com/spf13/cobra"
 )
@@ -15,7 +15,7 @@ func init() {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id := store.NormalizeEntityID(args[0])
-			if err := command.Delete(cfg.kgDir, id); err != nil {
+			if err := batch.DeleteRef(cfg.kgDir, id); err != nil {
 				return err
 			}
 			if !cfg.quiet {

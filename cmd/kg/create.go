@@ -3,9 +3,9 @@ package main
 import (
 	"os"
 
+	"github.com/pbleisch/kg/pkg/batch"
 	"github.com/pbleisch/kg/pkg/command"
 	"github.com/pbleisch/kg/pkg/output"
-	"github.com/pbleisch/kg/pkg/store"
 	"github.com/spf13/cobra"
 )
 
@@ -19,15 +19,9 @@ func init() {
 			if err != nil {
 				return err
 			}
-
 			upsert, _ := cmd.Flags().GetBool("upsert")
 
-			var e *store.Entity
-			if upsert {
-				e, err = command.Upsert(cfg.kgDir, args[0], args[1], attrs)
-			} else {
-				e, err = command.Create(cfg.kgDir, args[0], args[1], attrs)
-			}
+			e, err := batch.CreateEntity(cfg.kgDir, args[0], args[1], attrs, upsert)
 			if err != nil {
 				return err
 			}

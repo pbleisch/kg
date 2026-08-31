@@ -9,10 +9,7 @@ import (
 func TestDelete(t *testing.T) {
 	kgDir := setupKGDir(t)
 
-	_, err := Create(kgDir, "Person", "charlie", map[string]string{"name": "Charlie"})
-	if err != nil {
-		t.Fatalf("Create failed: %v", err)
-	}
+	createTestEntity(t, kgDir, "person:charlie")
 
 	if err := Delete(kgDir, "person:charlie"); err != nil {
 		t.Fatalf("Delete failed: %v", err)
