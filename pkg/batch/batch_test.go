@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/pbleisch/kg/pkg/store"
+	"github.com/pbleisch/kg/pkg/vector"
 )
 
 func setupKG(t *testing.T) string {
@@ -383,5 +384,103 @@ func TestCoercesNumericAttributeFromSchema(t *testing.T) {
 		_ = v
 	default:
 		t.Errorf("year has type %T, want numeric", e.Attributes["year"])
+	}
+}
+
+// TestApply_DeleteDropsVectors: an entity that a batch removed must lose its
+// sidecar rows, or `kg similar` keeps returning something the graph no longer
+// has.
+func TestApply_DeleteDropsVectors(t *testing.T) {
+	dir := t.TempDir()
+
+	script := filepath.Join(t.TempDir(), "embed.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ncat >/dev/null\necho '[0.1, 0.2, 0.3]'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "embedder.yaml"),
+		[]byte("command: \""+script+"\"\nfields: [name]\nbatch: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	apply := func(key string, records ...Record) *Result {
+		t.Helper()
+		env, err := NewEnvelope(1, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := Apply(dir, env, records, Options{})
+		if err != nil {
+			t.Fatalf("Apply(%s): %v", key, err)
+		}
+		return res
+	}
+
+	apply("seed",
+		Record{Op: OpCreate, Entity: &store.Entity{ID: "person:alice", Type: "person", Attributes: map[string]any{"name": "Alice"}}},
+		Record{Op: OpCreate, Entity: &store.Entity{ID: "person:bob", Type: "person", Attributes: map[string]any{"name": "Bob"}}},
+	)
+
+	vs, err := vector.Open(store.CacheDir(dir), "")
+	if err != nil {
+		t.Fatalf("the batch built no sidecar: %v", err)
+	}
+	if vs.Len() != 2 {
+		t.Errorf("sidecar holds %d rows after the seed batch, want 2", vs.Len())
+	}
+	vs.Close()
+
+	apply("remove", Record{Op: OpDelete, Target: "person:bob"})
+
+	vs, err = vector.Open(store.CacheDir(dir), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vs.Close()
+	if _, ok := vs.Vector("person:bob", "name"); ok {
+		t.Error("the deleted entity kept its vector")
+	}
+	if _, ok := vs.Vector("person:alice", "name"); !ok {
+		t.Error("an unrelated entity lost its vector")
+	}
+}
+
+// TestApply_StripsVectorAttributes: a producer may supply a vector, and it must
+// be used and then not persisted (P2).
+func TestApply_StripsVectorAttributes(t *testing.T) {
+	dir := t.TempDir()
+	env, err := NewEnvelope(1, "with-vector")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Apply(dir, env, []Record{{
+		Op: OpCreate,
+		Entity: &store.Entity{ID: "person:alice", Type: "person", Attributes: map[string]any{
+			"name":           "Alice",
+			"name_embedding": []any{0.1, 0.2, 0.3},
+		}},
+	}}, Options{})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	data, err := os.ReadFile(store.EntityPath(dir, "person:alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "name_embedding") {
+		t.Errorf("the write boundary let a vector into an entity file:\n%s", data)
+	}
+	if !strings.Contains(string(data), "Alice") {
+		t.Error("the strip took content with it")
+	}
+
+	var warned bool
+	for _, w := range res.Warnings {
+		if w.Code == "derived_attribute" {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("no warning that a vector attribute was dropped; warnings: %v", res.Warnings)
 	}
 }

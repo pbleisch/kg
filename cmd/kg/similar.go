@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/pbleisch/kg/pkg/output"
@@ -17,7 +16,9 @@ func init() {
 		Short: "Find entities similar to a query vector",
 		Long: `Find entities of a given type ranked by vector similarity.
 
-Requires the kg-ladybug binary (LadybugDB backend).
+Vectors live in the gitignored sidecar under .kg/.cache/, not in the entity
+files; build it with 'kg sync'. The search is an exact brute-force scan of the
+sidecar, so its answer does not depend on how an index was built.
 
 Examples:
   kg similar document --vector "0.1,0.2,0.3" --field embedding
@@ -64,7 +65,7 @@ Examples:
 			case vectorFile != "":
 				vec, err = query.LoadVectorFile(vectorFile)
 			case likeID != "":
-				vec, err = vectorFromEntity(cfg.kgDir, store.NormalizeEntityID(likeID), fields)
+				vec, err = query.VectorForEntity(cfg.kgDir, store.NormalizeEntityID(likeID), fields)
 			}
 			if err != nil {
 				return err
@@ -106,7 +107,7 @@ Examples:
 			}
 
 			f := output.NewFormatter(cfg.format)
-			return f.FormatEntities(os.Stdout, entities)
+			return f.FormatEntities(cmd.OutOrStdout(), entities)
 		},
 	}
 
@@ -131,34 +132,4 @@ func splitComma(s string) []string {
 		}
 	}
 	return out
-}
-
-// vectorFromEntity loads an entity and returns the vector from the first
-// matching field (exact name or <name>_embedding fallback).
-func vectorFromEntity(kgDir, entityID string, fields []string) ([]float64, error) {
-	if err := store.Sync(kgDir); err != nil {
-		return nil, fmt.Errorf("syncing index: %w", err)
-	}
-	idx, err := store.OpenIndex(kgDir)
-	if err != nil {
-		return nil, err
-	}
-	defer idx.Close()
-
-	e, err := idx.GetEntity(entityID)
-	if err != nil {
-		return nil, fmt.Errorf("entity %s not found: %w", entityID, err)
-	}
-
-	for _, field := range fields {
-		for _, name := range []string{field, field + "_embedding"} {
-			if val, ok := e.Attributes[name]; ok {
-				if vec, ok := store.ExtractVector(val); ok {
-					return vec, nil
-				}
-			}
-		}
-	}
-
-	return nil, fmt.Errorf("entity %s has no vector in fields %v (also tried _embedding suffixes)", entityID, fields)
 }

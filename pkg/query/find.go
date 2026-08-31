@@ -46,18 +46,11 @@ func Find(kgDir, typeName string, filters []Filter) ([]*store.Entity, error) {
 
 // FindWithOpts is like Find but accepts full QueryOptions for pagination
 // and embedding control.
+//
+// It reads one directory — <kgDir>/entities/<type>/ — not the whole graph, so
+// a typed find over a large corpus costs what that type costs (ADR-0026).
 func FindWithOpts(kgDir, typeName string, opts store.QueryOptions) ([]*store.Entity, error) {
-	if err := store.Sync(kgDir); err != nil {
-		return nil, fmt.Errorf("syncing index: %w", err)
-	}
-
-	idx, err := store.OpenIndex(kgDir)
-	if err != nil {
-		return nil, fmt.Errorf("opening index: %w", err)
-	}
-	defer idx.Close()
-
-	results, err := idx.FindEntities(typeName, opts)
+	results, err := store.FindByType(kgDir, typeName, opts)
 	if err != nil {
 		return nil, fmt.Errorf("finding type %s: %w", typeName, err)
 	}
@@ -67,7 +60,7 @@ func FindWithOpts(kgDir, typeName string, opts store.QueryOptions) ([]*store.Ent
 		if schemas, serr := schema.LoadAllSchemas(kgDir); serr == nil {
 			for name := range schemas {
 				if strings.EqualFold(name, typeName) && name != typeName {
-					if r2, err2 := idx.FindEntities(name, opts); err2 == nil && len(r2) > 0 {
+					if r2, err2 := store.FindByType(kgDir, name, opts); err2 == nil && len(r2) > 0 {
 						results = r2
 						break
 					}

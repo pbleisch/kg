@@ -1,5 +1,10 @@
 # 0023 — kg watch Event Stream
 
+**AMENDED 2026-08-30 by [0027](0027-delete-index-and-daemon.md).** `kg watch --daemon`
+is gone with the daemon; watching is direct only. Everything else in this ADR — the event
+shapes, `--snapshot`, `--type`, `--debounce`, the NDJSON/TTY split — is unchanged.
+
+
 Status: Decided
 
 Date: 2026-02-22

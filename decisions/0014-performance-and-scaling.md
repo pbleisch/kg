@@ -1,5 +1,13 @@
 # 0014 - Performance and Scaling
 
+**AMENDED 2026-08-30 by [0027](0027-delete-index-and-daemon.md) and
+[0026](0026-read-budget-and-scale-ceiling.md).** Every optimization below that names the
+index or the daemon describes deleted code: index-based merge, stats-from-index,
+server-side Cypher filtering, the HNSW vector index and the daemon-as-index-server are
+all gone. The target this ADR states — ≤100k entities — survives and is now measured
+rather than assumed; ADR-0026 carries the evidence and the budget, and is unratified.
+
+
 Status: Accepted
 
 Date: 2026-02-01

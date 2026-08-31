@@ -7,28 +7,22 @@ import (
 )
 
 // Back finds entities that point to targetID via the given relation.
-// It syncs the index, performs a reverse lookup, and returns full entities.
+//
+// A reverse lookup is the one read that genuinely needs every entity: an
+// inbound edge is recorded only on the entity that has it, so nothing short of
+// reading them all can find the edges pointing here. That whole-graph walk is
+// the traversal half of P4's budget (ADR-0026).
 func Back(kgDir string, targetID string, relation string) ([]*store.Entity, error) {
-	if err := store.Sync(kgDir); err != nil {
-		return nil, fmt.Errorf("sync: %w", err)
-	}
-
-	idx, err := store.OpenIndex(kgDir)
+	g, err := store.LoadGraph(kgDir)
 	if err != nil {
-		return nil, fmt.Errorf("open index: %w", err)
-	}
-	defer idx.Close()
-
-	ids, err := idx.FindByRelationTarget(relation, targetID)
-	if err != nil {
-		return nil, fmt.Errorf("reverse lookup: %w", err)
+		return nil, fmt.Errorf("loading graph: %w", err)
 	}
 
 	var entities []*store.Entity
-	for _, id := range ids {
-		e, err := idx.GetEntity(id)
-		if err != nil {
-			return nil, fmt.Errorf("get entity %s: %w", id, err)
+	for _, id := range g.ReferrersVia(relation, targetID) {
+		e, ok := g.Entity(id)
+		if !ok {
+			return nil, fmt.Errorf("get entity %s", id)
 		}
 		entities = append(entities, e)
 	}
@@ -38,15 +32,10 @@ func Back(kgDir string, targetID string, relation string) ([]*store.Entity, erro
 // BackRecursive performs a BFS following the reverse relation from targetID
 // until no new entity IDs are discovered. It is cycle-safe.
 func BackRecursive(kgDir string, targetID string, relation string) ([]string, error) {
-	if err := store.Sync(kgDir); err != nil {
-		return nil, fmt.Errorf("sync: %w", err)
-	}
-
-	idx, err := store.OpenIndex(kgDir)
+	g, err := store.LoadGraph(kgDir)
 	if err != nil {
-		return nil, fmt.Errorf("open index: %w", err)
+		return nil, fmt.Errorf("loading graph: %w", err)
 	}
-	defer idx.Close()
 
 	seen := map[string]bool{targetID: true}
 	queue := []string{targetID}
@@ -55,12 +44,7 @@ func BackRecursive(kgDir string, targetID string, relation string) ([]string, er
 	for len(queue) > 0 {
 		current := queue[0]
 		queue = queue[1:]
-
-		ids, err := idx.FindByRelationTarget(relation, current)
-		if err != nil {
-			return nil, fmt.Errorf("reverse lookup %s: %w", current, err)
-		}
-		for _, id := range ids {
+		for _, id := range g.ReferrersVia(relation, current) {
 			if !seen[id] {
 				seen[id] = true
 				result = append(result, id)

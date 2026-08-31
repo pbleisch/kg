@@ -25,10 +25,10 @@ type request struct {
 }
 
 type response struct {
-	JSONRPC string      `json:"jsonrpc"`
+	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id"`
-	Result  any         `json:"result,omitempty"`
-	Error   *rpcError   `json:"error,omitempty"`
+	Result  any             `json:"result,omitempty"`
+	Error   *rpcError       `json:"error,omitempty"`
 }
 
 type rpcError struct {
@@ -68,9 +68,9 @@ type jsonSchema struct {
 }
 
 type schemaProp struct {
-	Type        string     `json:"type"`
-	Description string     `json:"description,omitempty"`
-	Items       *itemsDef  `json:"items,omitempty"`
+	Type        string                `json:"type"`
+	Description string                `json:"description,omitempty"`
+	Items       *itemsDef             `json:"items,omitempty"`
 	Properties  map[string]schemaProp `json:"properties,omitempty"`
 }
 
@@ -445,8 +445,8 @@ func (s *Server) toolStats(args json.RawMessage) (*query.GraphStats, error) {
 
 type validateResult struct {
 	Valid         bool          `json:"valid"`
-	TotalEntities int          `json:"total_entities"`
-	ErrorCount    int          `json:"error_count"`
+	TotalEntities int           `json:"total_entities"`
+	ErrorCount    int           `json:"error_count"`
 	Errors        []validateErr `json:"errors"`
 }
 

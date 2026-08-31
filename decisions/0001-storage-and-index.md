@@ -1,5 +1,12 @@
 # 0001 - Storage and Index
 
+**AMENDED 2026-08-30 by [0027](0027-delete-index-and-daemon.md).** The index is gone
+and so is the daemon that watched it. The storage half of this ADR — YAML files as the
+sole source of truth — stands and is the whole architecture now; the "hybrid sync model"
+below describes deleted code. The one derived artifact left is the vector sidecar, which
+no read depends on and one command rebuilds.
+
+
 Status: Proposed
 
 Date: 2026-02-01

@@ -20,9 +20,11 @@ type MergeOptions struct {
 	PreferSource bool
 	DryRun       bool
 	CrossType    bool
-	// Idx is an optional pre-opened index. When provided, merge uses it to
-	// find incoming links via FindReferrers instead of scanning all YAML files.
-	Idx store.Indexer
+	// Graph is an optional pre-loaded graph. A merge has to rewrite every
+	// inbound link to the source, and finding those means reading every
+	// entity; a caller merging in a loop passes the graph it already has
+	// rather than making each merge walk the corpus again.
+	Graph *store.Graph
 }
 
 // Merge combines source into target, rewriting all incoming links, then
@@ -76,64 +78,47 @@ func Merge(kgDir, sourceID, targetID string, opts MergeOptions) (*MergeResult, e
 	}
 
 	// Find all entities that link to source and rewrite those links.
-	var toUpdate []*store.Entity
-	if opts.Idx != nil {
-		// Fast path: use index to find referrers instead of scanning all YAML.
-		referrerIDs, err := opts.Idx.FindReferrers(sourceID)
-		if err != nil {
-			return nil, fmt.Errorf("finding referrers of %s: %w", sourceID, err)
-		}
-		for _, refID := range referrerIDs {
-			if refID == sourceID || refID == targetID {
-				continue
-			}
-			e, err := store.ReadEntity(kgDir, refID)
-			if err != nil {
-				continue // entity may have been deleted during batch
-			}
-			changed := false
-			for relName, targets := range e.Relations {
-				for i, t := range targets {
-					if t == sourceID {
-						targets[i] = targetID
-						changed = true
-						result.IncomingRewritten++
-					}
-				}
-				if changed {
-					e.Relations[relName] = dedupStrings(targets)
-				}
-			}
-			if changed {
-				toUpdate = append(toUpdate, e)
-			}
-		}
+	//
+	// Only the referrers are re-read from disk: the caller's graph may be a
+	// snapshot from before earlier merges in the same batch, and the file is
+	// the authority.
+	var candidates []string
+	if opts.Graph != nil {
+		candidates = opts.Graph.Referrers(sourceID)
 	} else {
-		// Fallback: scan all entities from YAML (slow on large KGs).
-		allEntities, err := store.ListEntities(kgDir)
+		g, err := store.LoadGraph(kgDir)
 		if err != nil {
-			return nil, fmt.Errorf("listing entities for incoming link scan: %w", err)
+			return nil, fmt.Errorf("loading graph for incoming link scan: %w", err)
 		}
-		for _, e := range allEntities {
-			if e.ID == sourceID || e.ID == targetID {
-				continue
-			}
-			changed := false
-			for relName, targets := range e.Relations {
-				for i, t := range targets {
-					if t == sourceID {
-						targets[i] = targetID
-						changed = true
-						result.IncomingRewritten++
-					}
+		candidates = g.Referrers(sourceID)
+	}
+
+	var toUpdate []*store.Entity
+	for _, refID := range candidates {
+		if refID == sourceID || refID == targetID {
+			continue
+		}
+		e, err := store.ReadEntity(kgDir, refID)
+		if err != nil {
+			continue // entity may have been deleted earlier in the batch
+		}
+		changed := false
+		for relName, targets := range e.Relations {
+			relChanged := false
+			for i, t := range targets {
+				if t == sourceID {
+					targets[i] = targetID
+					relChanged = true
+					result.IncomingRewritten++
 				}
-				if changed {
-					e.Relations[relName] = dedupStrings(targets)
-				}
 			}
-			if changed {
-				toUpdate = append(toUpdate, e)
+			if relChanged {
+				e.Relations[relName] = dedupStrings(targets)
+				changed = true
 			}
+		}
+		if changed {
+			toUpdate = append(toUpdate, e)
 		}
 	}
 
@@ -156,11 +141,6 @@ func Merge(kgDir, sourceID, targetID string, opts MergeOptions) (*MergeResult, e
 	// Delete source entity file.
 	if err := store.DeleteEntity(kgDir, sourceID); err != nil {
 		return nil, fmt.Errorf("deleting source %s: %w", sourceID, err)
-	}
-
-	// Single sync at the end.
-	if err := store.Sync(kgDir); err != nil {
-		return nil, fmt.Errorf("syncing index: %w", err)
 	}
 
 	return result, nil

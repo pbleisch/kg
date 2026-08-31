@@ -8,11 +8,11 @@ import (
 
 // Debouncer buffers events and coalesces them per entity.
 type Debouncer struct {
-	delay  time.Duration
-	in     <-chan Event
-	out    chan Event
-	done   chan struct{}
-	wg     sync.WaitGroup
+	delay time.Duration
+	in    <-chan Event
+	out   chan Event
+	done  chan struct{}
+	wg    sync.WaitGroup
 }
 
 // NewDebouncer creates a debouncer that reads from in and writes

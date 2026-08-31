@@ -1,8 +1,7 @@
 # .goreleaser.yaml
 #
-# Creates the GitHub release with changelog.
-# Native platform builds are handled by release.yaml which attaches
-# binaries to the release created here.
+# kg is pure Go: one cross-compiled build covers every platform, with no
+# native library to bundle and no rpath to embed (ADR-0027).
 
 version: 2
 project_name: kg
@@ -12,7 +11,25 @@ before:
     - go mod tidy
 
 builds:
-  - skip: true
+  - id: kg
+    main: ./cmd/kg
+    binary: kg
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+
+archives:
+  - id: kg
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: checksums.txt
 
 changelog:
   sort: asc

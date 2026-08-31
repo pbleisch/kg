@@ -1,7 +1,6 @@
 package query
 
 import (
-	"fmt"
 	"sort"
 
 	"github.com/pbleisch/kg/pkg/store"
@@ -20,29 +19,20 @@ type PathResult struct {
 	ID    string
 }
 
-// Path traverses the graph starting from startID, following each step's
-// relation in order, and returns the deduplicated set of entity IDs reached.
+// Path traverses the graph from startID, following each step's relation in
+// order, and returns the deduplicated set of entity IDs reached.
+//
+// Entities are read as the traversal reaches them, so a path costs the part of
+// the graph it walks rather than the whole corpus.
 func Path(kgDir string, startID string, steps []PathStep) ([]string, error) {
-	if err := store.Sync(kgDir); err != nil {
-		return nil, fmt.Errorf("sync: %w", err)
-	}
-
-	idx, err := store.OpenIndex(kgDir)
-	if err != nil {
-		return nil, fmt.Errorf("open index: %w", err)
-	}
-	defer idx.Close()
-
+	l := store.NewLoader(kgDir)
 	current := []string{startID}
 
 	for _, step := range steps {
 		if step.Recursive {
-			current, err = walkRecursive(idx, current, step.Relation)
+			current = walkRecursive(l, current, step.Relation)
 		} else {
-			current, err = walkOneHop(idx, current, step.Relation)
-		}
-		if err != nil {
-			return nil, err
+			current = walkOneHop(l, current, step.Relation)
 		}
 	}
 
@@ -53,81 +43,46 @@ func Path(kgDir string, startID string, steps []PathStep) ([]string, error) {
 // PathVerbose is like Path but returns intermediate results recording the
 // depth and relation used to reach each entity.
 func PathVerbose(kgDir string, startID string, steps []PathStep) ([]PathResult, error) {
-	if err := store.Sync(kgDir); err != nil {
-		return nil, fmt.Errorf("sync: %w", err)
-	}
-
-	idx, err := store.OpenIndex(kgDir)
-	if err != nil {
-		return nil, fmt.Errorf("open index: %w", err)
-	}
-	defer idx.Close()
-
+	l := store.NewLoader(kgDir)
 	current := []string{startID}
 	var results []PathResult
 
 	for i, step := range steps {
 		depth := i + 1
 		if step.Recursive {
-			var reached []string
-			reached, results, err = walkRecursiveVerbose(idx, current, step.Relation, depth, results)
-			current = reached
-		} else {
-			next := make(map[string]struct{})
-			for _, id := range current {
-				targets, err := relTargets(idx, id, step.Relation)
-				if err != nil {
-					return nil, err
-				}
-				for _, t := range targets {
-					if _, seen := next[t]; !seen {
-						next[t] = struct{}{}
-						results = append(results, PathResult{
-							Depth: depth,
-							Via:   step.Relation,
-							ID:    t,
-						})
-					}
+			current, results = walkRecursiveVerbose(l, current, step.Relation, depth, results)
+			continue
+		}
+		next := make(map[string]struct{})
+		for _, id := range current {
+			for _, t := range l.Relations(id, step.Relation) {
+				if _, seen := next[t]; !seen {
+					next[t] = struct{}{}
+					results = append(results, PathResult{Depth: depth, Via: step.Relation, ID: t})
 				}
 			}
-			current = setToSlice(next)
 		}
-		if err != nil {
-			return nil, err
-		}
+		current = setToSlice(next)
 	}
 
 	return results, nil
 }
 
-// relTargets returns the relation targets for a single entity and relation name.
-func relTargets(idx store.Indexer, id, relation string) ([]string, error) {
-	e, err := idx.GetEntity(id)
-	if err != nil {
-		return nil, nil // entity not found — no targets
-	}
-	return e.Relations[relation], nil
-}
-
 // walkOneHop collects all relation targets for every ID in current,
 // returning a deduplicated slice.
-func walkOneHop(idx store.Indexer, current []string, relation string) ([]string, error) {
+func walkOneHop(l *store.Loader, current []string, relation string) []string {
 	seen := make(map[string]struct{})
 	for _, id := range current {
-		targets, err := relTargets(idx, id, relation)
-		if err != nil {
-			return nil, err
-		}
-		for _, t := range targets {
+		for _, t := range l.Relations(id, relation) {
 			seen[t] = struct{}{}
 		}
 	}
-	return setToSlice(seen), nil
+	return setToSlice(seen)
 }
 
 // walkRecursive follows the relation transitively using BFS until no new IDs
 // are found. Tracks visited IDs to handle cycles.
-func walkRecursive(idx store.Indexer, seeds []string, relation string) ([]string, error) {
+func walkRecursive(l *store.Loader, seeds []string, relation string) []string {
 	visited := make(map[string]struct{})
 	queue := make([]string, len(seeds))
 	copy(queue, seeds)
@@ -136,16 +91,10 @@ func walkRecursive(idx store.Indexer, seeds []string, relation string) ([]string
 	}
 
 	var collected []string
-
 	for len(queue) > 0 {
 		id := queue[0]
 		queue = queue[1:]
-
-		targets, err := relTargets(idx, id, relation)
-		if err != nil {
-			return nil, err
-		}
-		for _, t := range targets {
+		for _, t := range l.Relations(id, relation) {
 			if _, seen := visited[t]; !seen {
 				visited[t] = struct{}{}
 				collected = append(collected, t)
@@ -153,12 +102,11 @@ func walkRecursive(idx store.Indexer, seeds []string, relation string) ([]string
 			}
 		}
 	}
-
-	return collected, nil
+	return collected
 }
 
 // walkRecursiveVerbose is like walkRecursive but appends PathResult entries.
-func walkRecursiveVerbose(idx store.Indexer, seeds []string, relation string, baseDepth int, results []PathResult) ([]string, []PathResult, error) {
+func walkRecursiveVerbose(l *store.Loader, seeds []string, relation string, baseDepth int, results []PathResult) ([]string, []PathResult) {
 	type item struct {
 		id    string
 		depth int
@@ -172,30 +120,20 @@ func walkRecursiveVerbose(idx store.Indexer, seeds []string, relation string, ba
 	}
 
 	var collected []string
-
 	for len(queue) > 0 {
 		cur := queue[0]
 		queue = queue[1:]
-
-		targets, err := relTargets(idx, cur.id, relation)
-		if err != nil {
-			return nil, nil, err
-		}
-		for _, t := range targets {
+		for _, t := range l.Relations(cur.id, relation) {
 			if _, seen := visited[t]; !seen {
 				visited[t] = struct{}{}
 				collected = append(collected, t)
-				results = append(results, PathResult{
-					Depth: cur.depth,
-					Via:   relation,
-					ID:    t,
-				})
+				results = append(results, PathResult{Depth: cur.depth, Via: relation, ID: t})
 				queue = append(queue, item{id: t, depth: cur.depth + 1})
 			}
 		}
 	}
 
-	return collected, results, nil
+	return collected, results
 }
 
 func setToSlice(m map[string]struct{}) []string {

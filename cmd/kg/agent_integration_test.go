@@ -44,7 +44,7 @@ func TestAgentStatus(t *testing.T) {
 		t.Fatalf("agent status: %v", err)
 	}
 
-	for _, want := range []string{"entity_count:", "schema_types", "index_status:", "daemon_status:"} {
+	for _, want := range []string{"entity_count:", "schema_types", "vectors:", "embedder:"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("agent status missing %q, got:\n%s", want, out)
 		}

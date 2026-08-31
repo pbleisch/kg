@@ -69,6 +69,15 @@ Examples:
 				enc.SetIndent("", "  ")
 				return enc.Encode(result)
 			default:
+				// Warnings print whatever the outcome. "No duplicates found"
+				// on a corpus with no vectors is not a result, and reporting
+				// it without the reason is how that goes unnoticed.
+				defer func() {
+					for _, warn := range result.Warnings {
+						fmt.Fprintf(os.Stderr, "  warning: %s\n", warn)
+					}
+				}()
+
 				if result.ClustersFound == 0 {
 					if !cfg.quiet {
 						fmt.Fprintf(w, "no duplicates found across %d entities\n", result.TotalEntities)
@@ -88,9 +97,6 @@ Examples:
 				} else {
 					fmt.Fprintf(w, "%d duplicates found, %d clusters across %d entities\n",
 						result.DuplicatesFound, result.ClustersFound, result.TotalEntities)
-				}
-				for _, w := range result.Warnings {
-					fmt.Fprintf(os.Stderr, "  warning: %s\n", w)
 				}
 			}
 			return nil

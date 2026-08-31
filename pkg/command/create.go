@@ -30,9 +30,6 @@ func UpsertEntity(kgDir string, e *store.Entity) (*store.Entity, error) {
 		if err := store.WriteEntity(kgDir, e); err != nil {
 			return nil, fmt.Errorf("writing entity: %w", err)
 		}
-		if err := store.Sync(kgDir); err != nil {
-			return nil, fmt.Errorf("syncing index: %w", err)
-		}
 		return e, nil
 	}
 
@@ -58,9 +55,6 @@ func UpsertEntity(kgDir string, e *store.Entity) (*store.Entity, error) {
 
 	if err := store.WriteEntity(kgDir, existing); err != nil {
 		return nil, fmt.Errorf("writing entity: %w", err)
-	}
-	if err := store.Sync(kgDir); err != nil {
-		return nil, fmt.Errorf("syncing index: %w", err)
 	}
 	return existing, nil
 }

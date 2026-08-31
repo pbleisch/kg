@@ -32,24 +32,22 @@ func init() {
 			configContent := `# kg knowledge graph configuration
 # Entity YAML files are stored in entities/<type>/<id>.yaml
 # Schema files are stored in schema/<type>.yaml
-
-# Index backend (only "ladybug" is supported)
-backend: ladybug
-
-# Embedding configuration (uncomment to enable)
-# Run 'kg embed --init' to scaffold a working setup automatically.
-# Embeddings run automatically during 'kg sync'.
-# embedding:
-#   command: "python3 .kg/scripts/embed.py"
-#   fields: [name, description]
-#   batch: false
+#
+# This file travels with the graph, so it holds nothing machine-specific.
+# The embedding command is NOT configured here: it names a program on one
+# machine. Set KG_EMBED_COMMAND, or run 'kg embed --init' to scaffold
+# embedder.yaml beside this file (gitignored, per checkout). See ADR-0025.
 `
 			if err := os.WriteFile(configPath, []byte(configContent), 0o644); err != nil {
 				return fmt.Errorf("writing config.yaml: %w", err)
 			}
 
+			if err := ensureGraphGitignore(cfg.kgDir); err != nil {
+				return err
+			}
+
 			gitignorePath := filepath.Join(cfg.kgDir, ".cache", ".gitignore")
-			gitignoreContent := "# Generated index cache — rebuild with 'kg sync --rebuild'\n*\n!.gitignore\n"
+			gitignoreContent := "# Derived data — rebuild with 'kg sync'\n*\n!.gitignore\n"
 			if err := os.WriteFile(gitignorePath, []byte(gitignoreContent), 0o644); err != nil {
 				return fmt.Errorf("writing .cache/.gitignore: %w", err)
 			}

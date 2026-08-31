@@ -31,11 +31,14 @@ are rewritten to point to target. The source entity is then deleted.`,
 				CrossType:    crossType,
 			}
 
-			// Open index for fast incoming-link lookup.
-			if idx, err := store.OpenIndex(cfg.kgDir); err == nil {
-				opts.Idx = idx
-				defer idx.Close()
+			// A merge rewrites every inbound link to the source, so it needs
+			// the whole graph. Load it here so a failure to read the corpus
+			// surfaces before anything is written.
+			g, err := store.LoadGraph(cfg.kgDir)
+			if err != nil {
+				return fmt.Errorf("loading graph: %w", err)
 			}
+			opts.Graph = g
 
 			result, err := command.Merge(cfg.kgDir, store.NormalizeEntityID(args[0]), store.NormalizeEntityID(args[1]), opts)
 			if err != nil {

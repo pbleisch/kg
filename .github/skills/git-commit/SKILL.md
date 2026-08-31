@@ -87,7 +87,7 @@ With body:
 ```bash
 git commit -m "feat: add kg find with attribute filters" \
   -m "Supports =, !=, ~, >, <, >=, <= operators.
-Reads from LadybugDB index. Falls back to scan if index stale.
+Reads the entity file directly. No index, nothing to keep warm.
 
 Closes kg-x7f"
 ```

@@ -1,5 +1,10 @@
 # 0010 - Implementation and Dependencies
 
+**AMENDED 2026-08-30 by [0027](0027-delete-index-and-daemon.md).** `go-ladybug` is no
+longer a dependency and CGO is no longer required: kg cross-compiles to one static binary
+per platform from a single job. Go, cobra and yaml.v3 are unchanged.
+
+
 Status: Proposed
 
 Date: 2026-02-01

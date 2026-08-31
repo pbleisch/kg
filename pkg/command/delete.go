@@ -6,7 +6,8 @@ import (
 	"github.com/pbleisch/kg/pkg/store"
 )
 
-// Delete removes an entity by ID and re-syncs the index.
+// Delete removes an entity by ID. The file is the graph, so removing the
+// file is the whole operation.
 func Delete(kgDir, id string) error {
 	if _, err := store.ReadEntity(kgDir, id); err != nil {
 		return fmt.Errorf("entity %q not found: %w", id, err)
@@ -14,10 +15,6 @@ func Delete(kgDir, id string) error {
 
 	if err := store.DeleteEntity(kgDir, id); err != nil {
 		return fmt.Errorf("deleting entity: %w", err)
-	}
-
-	if err := store.Sync(kgDir); err != nil {
-		return fmt.Errorf("syncing index: %w", err)
 	}
 
 	return nil

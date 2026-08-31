@@ -1,15 +1,15 @@
 # kg — Local Knowledge Graph for Agents
 
-A git-friendly knowledge graph system designed for LLM agents and CLI workflows. Store entities and relationships as YAML files, query them instantly via a local index, and get token-efficient TOON output optimized for agent consumption.
+A git-friendly knowledge graph system designed for LLM agents and CLI workflows. Store entities and relationships as YAML files, read them with nothing running, and get token-efficient TOON output optimized for agent consumption.
 
 ## Design Goals
 
 - **Git-friendly**: Source of truth is human-readable YAML files that diff and merge cleanly
 - **Agent-optimized**: Default output in TOON format minimizes tokens while maximizing LLM comprehension
-- **Fast queries**: Local LadybugDB index enables instant lookups without parsing files
+- **No service required**: a read opens files — no daemon, no index, no database. A single-entity read is ~3 ms whatever the corpus size; see [decisions/0026](../decisions/0026-read-budget-and-scale-ceiling.md)
 - **Simple mental model**: Entities have types, attributes, and relations to other entities
 - **Files as API**: Schemas and entities are just YAML files—agents can read and write them directly
-- **Three modes**: CLI for direct use, MCP for agent integration, daemon for performance
+- **Two modes**: CLI for direct use, MCP for agent integration
 
 ## Architecture
 
@@ -28,16 +28,27 @@ A git-friendly knowledge graph system designed for LLM agents and CLI workflows.
 │         │                                 │                 │
 │         ▼                                 ▼                 │
 │   ┌───────────┐                    ┌───────────┐           │
-│   │   YAML    │──────── sync ─────▶│ LadybugDB │           │
-│   │  (truth)  │                    │  (index)  │           │
-│   └───────────┘                    └───────────┘           │
-│                                                             │
+│   │   YAML    │◀─── read directly ─│  the same │           │
+│   │  (truth)  │                    │   files   │           │
+│   └─────┬─────┘                    └───────────┘           │
+│         │                                                   │
+│         │  kg sync                  kg similar              │
+│         ▼                                 │                 │
+│   ┌──────────────────┐                    │                 │
+│   │ .kg/.cache/      │◀───────────────────┘                 │
+│   │ vectors.bin/.idx │  (derived, gitignored)               │
+│   └──────────────────┘                                      │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ### Storage Model
 
-All writes go to YAML first, then sync to the index. All reads come from the index for speed.
+The YAML files are the graph. Reads open them: one file for a point read, one directory
+for a typed find, and a whole-graph walk only for the reads that need every entity
+(`back`, `stats`, `validate`).
+
+The one derived artifact is the vector sidecar, which `kg similar` scans and `kg sync`
+rebuilds. Delete `.kg/.cache/` and `git status` stays clean.
 
 ```
 .kg/
@@ -51,10 +62,12 @@ All writes go to YAML first, then sync to the index. All reads come from the ind
 │   ├── person.yaml
 │   └── project.yaml
 ├── morphisms.yaml             # reusable path patterns
-├── config.yaml
-└── .cache/                    # gitignored
-    ├── ladybug/               # LadybugDB index
-    └── manifest.json          # sync state
+├── config.yaml                # travels with the graph
+├── embedder.yaml              # gitignored, per checkout — names the embedding command
+└── .cache/                    # gitignored, derived, rebuilt by `kg sync`
+    ├── vectors.bin            # packed float64 rows
+    ├── vectors.idx            # id→row, entity type, source-text checksum
+    └── apply/<key>.json       # batch idempotency ledger
 ```
 
 ### Entity File Format
@@ -568,26 +581,17 @@ Exposes tools:
 - `kg_link` — create relation
 - `kg_unlink` — remove relation
 
-### 3. Daemon Mode
+### 3. Library
 
-Background index server that holds the index open and serves queries via `net/rpc`.
+`pkg/store`, `pkg/query`, `pkg/batch` and `pkg/vector` are the same operations the CLI
+composes, linkable from any Go program. The CLI adds presentation and nothing else (P7).
 
-```bash
-$ kg daemon start    # start (foreground)
-$ kg daemon stop     # stop gracefully
-$ kg daemon status   # check if running
-```
-
-**Auto-start:** The first `kg` command auto-forks a daemon in the background. Subsequent commands connect via RPC instead of opening the index directly. Set `KG_NO_DAEMON=1` to disable.
-
-**Auto-stop:** The daemon exits after 30 minutes of inactivity.
-
-Benefits:
-- Eliminates index open/close overhead per command
-- No index lock contention between concurrent commands
-- Watches YAML files for changes, auto-syncs index
-- Two Unix sockets per graph: control (`daemon.sock`) + RPC (`daemon-rpc.sock`)
-- One daemon per knowledge graph, isolated by `.kg` directory
+There is no daemon. There used to be one, holding a LadybugDB index open over `net/rpc`;
+it existed only because opening that index cost tens of seconds, and the index was
+expensive only because 97.55% of the entity store was embedding floats. Moving the
+vectors to the sidecar took the first cold read from 783.8 s to 3 ms and left the daemon
+nothing to amortize. See
+[decisions/0027](../decisions/0027-delete-index-and-daemon.md).
 
 ## Agent Skill Description
 
@@ -669,34 +673,37 @@ Examples: `person:alice`, `project:atlas`, `team:platform`
 | `one` | At most one target |
 | `many` | Zero or more targets |
 
-## Sync Strategy
+## Derived Data
 
-The local index (LadybugDB) is a cache of the YAML source of truth.
+The entity files are the whole graph; nothing is kept in sync with them. The one derived
+artifact is the vector sidecar, which exists so `kg similar` has something to search.
 
-### Manifest Tracking
+### The sidecar
 
-```json
-// .kg/.cache/manifest.json
-{
-  "version": 1,
-  "syncedAt": "2025-01-15T10:30:00Z",
-  "files": {
-    "entities/person/alice.yaml": {
-      "checksum": "sha256:abc123...",
-      "mtime": "2025-01-15T10:29:00Z"
-    }
-  }
-}
+```
+.kg/.cache/vectors.bin    packed rows, `dim` float64s each, row i at byte offset i*dim*8
+.kg/.cache/vectors.idx    JSON: dim, row count, host byte order, embedder digest,
+                          and one entry per (entity, field) — row, entity type, and the
+                          SHA-256 of the text it was built from
 ```
 
-### Sync Triggers
+The index doubles as the staleness record: text whose checksum still matches is carried
+across a rebuild untouched, so `kg sync` only pays the embedder for what changed. It also
+records a digest of the embedder — the command plus the contents of any script it names —
+so changing the model invalidates vectors whose text has not changed.
 
-| Trigger | Mode | Use Case |
-|---------|------|----------|
-| Lazy | On query if stale | CLI invocations |
-| Watch | Filesystem events | Daemon mode |
-| Explicit | `kg sync` | After git pull |
-| Rebuild | `kg sync --rebuild` | Corruption recovery |
+### Rebuild triggers
+
+| Trigger | Command | Use case |
+|---------|---------|----------|
+| Incremental | `kg sync` | after editing entities, after `git pull` |
+| Full | `kg sync --rebuild` | after changing embedders, or to recover a damaged sidecar |
+| Report only | `kg sync --dry-run` | see what would be embedded |
+| No vectors wanted | `kg sync --no-embed` | this graph has none, deliberately |
+| One-way migration | `kg sync --migrate-vectors` | harvest `*_embedding` attributes out of a pre-sidecar corpus |
+
+A graph with no embedder configured has no derived data, and `kg sync` exits non-zero
+saying so rather than doing nothing quietly.
 
 ## Implementation Notes
 
@@ -709,9 +716,11 @@ kg/
 │       └── main.go           # CLI entry point
 ├── pkg/
 │   ├── store/
-│   │   ├── yaml.go           # YAML file operations
-│   │   ├── ladybug.go        # Index operations
-│   │   └── sync.go           # YAML ↔ LadybugDB sync
+│   │   ├── yaml.go           # YAML file operations, path-aware walks
+│   │   ├── graph.go          # whole-corpus in-memory graph (reverse edges, stats)
+│   │   ├── embedder_config.go # resolving the operator's embedding command
+│   │   ├── embed.go          # embedding, and the migration off in-file vectors
+│   │   └── sync.go           # rebuilding the derived data
 │   ├── query/
 │   │   ├── get.go
 │   │   ├── find.go
@@ -723,6 +732,11 @@ kg/
 │   │   ├── delete.go
 │   │   ├── link.go
 │   │   └── unlink.go
+│   ├── vector/
+│   │   ├── store.go          # mmapped sidecar, brute-force search
+│   │   ├── writer.go         # atomic whole-file writes
+│   │   └── index.go          # vectors.idx format
+│   ├── batch/                # the write boundary
 │   ├── schema/
 │   │   └── schema.go         # Schema loading/validation
 │   └── output/
@@ -730,8 +744,8 @@ kg/
 │       ├── json.go           # JSON formatting
 │       └── human.go          # Human-readable formatting
 ├── internal/
-│   └── daemon/
-│       └── daemon.go         # Background process
+│   ├── mcp/                  # MCP server
+│   └── watch/                # filesystem event stream
 └── go.mod
 ```
 
@@ -739,17 +753,22 @@ kg/
 
 | Dependency | Purpose |
 |------------|---------|
-| `github.com/LadybugDB/go-ladybug` | Graph database/index |
-| `github.com/toon-format/toon-go` | TOON encoding |
 | `github.com/spf13/cobra` | CLI framework |
+| `github.com/fsnotify/fsnotify` | `kg watch` |
+| `golang.org/x/term` | TTY detection for output format |
 | `gopkg.in/yaml.v3` | YAML parsing |
+
+No CGO, no database, no native library. The whole binary is static.
 
 ## Design Space: Labeled Facts
 
-LadybugDB's property graph model can support labeled facts natively via
-edge properties. The concept is similar to RDF quads — each fact can carry
-additional context (provenance, confidence, temporal markers) as properties
-on the relationship.
+*Written when kg had a property-graph index that could carry edge properties. That index
+is gone (ADR-0027), so the storage question below is now open rather than answered: a
+labeled fact would need a representation in the YAML, not in a database. The design
+space is unchanged; the implementation sketch is not.*
+
+Each fact could carry additional context (provenance, confidence, temporal markers)
+alongside the relationship, in the manner of RDF quads.
 
 ### What Quads Enable
 

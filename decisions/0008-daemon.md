@@ -1,6 +1,15 @@
 # 0008 - Daemon (background index watcher)
 
-Status: Accepted
+**SUPERSEDED 2026-08-30 by [0027](0027-delete-index-and-daemon.md).** The daemon is
+deleted. It existed only to amortize opening the LadybugDB index, and once the embedding
+floats left the entity files that index was not worth building: the first cold read went
+from 783.8 s to 3 ms. Everything below — both sockets, the pid file, the auto-start, the
+health check, the log rotation — describes code that no longer exists. Kept because the
+reasoning is a finding worth keeping (P9), and because the lifecycle bugs it records are
+the ones the deletion removed.
+
+
+Status: Superseded by 0027 (2026-08-30)
 
 Date: 2026-02-01
 

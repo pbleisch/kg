@@ -129,8 +129,8 @@ func TestValidateEntity_MissingRequired(t *testing.T) {
 	s, _ := LoadSchema(kgDir, "person")
 
 	entity := &store.Entity{
-		ID:         "person:alice",
-		Type:       "Person",
+		ID:   "person:alice",
+		Type: "Person",
 		Attributes: map[string]any{
 			"role": "Engineer",
 		},

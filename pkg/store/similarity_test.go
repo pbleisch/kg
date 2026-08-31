@@ -79,10 +79,10 @@ func TestDotProduct(t *testing.T) {
 
 func TestExtractVector(t *testing.T) {
 	tests := []struct {
-		name    string
-		input   any
-		want    []float64
-		wantOK  bool
+		name   string
+		input  any
+		want   []float64
+		wantOK bool
 	}{
 		{
 			name:   "native float64 slice",

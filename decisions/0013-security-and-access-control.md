@@ -1,5 +1,13 @@
 # 0013 - Security and Access Control
 
+**AMENDED 2026-08-30 by [0027](0027-delete-index-and-daemon.md).** kg listens on no
+socket and runs no resident process, so the daemon half of this ADR's threat model is
+moot. What replaced it as the notable surface is the embedding command, which kg executes
+with the operator's privileges — and which is deliberately configured outside the graph
+directory ([0025](0025-embedder-configuration.md)) so that cloning a graph cannot cause
+kg to run something its author chose. See `SECURITY.md`.
+
+
 Status: Proposed
 
 Date: 2026-02-01

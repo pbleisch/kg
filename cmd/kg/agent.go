@@ -2,18 +2,18 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"text/template"
 
-	"github.com/pbleisch/kg/internal/daemon"
 	"github.com/pbleisch/kg/pkg/schema"
 	"github.com/pbleisch/kg/pkg/store"
+	"github.com/pbleisch/kg/pkg/vector"
 	"github.com/spf13/cobra"
 )
 
@@ -73,12 +73,11 @@ func agentStatusCmd() *cobra.Command {
 				status.SchemaTypes = names
 			}
 
-			// Index freshness.
-			status.IndexStatus = indexFreshness(cfg.kgDir)
-			status.Backend = store.ActiveBackend(cfg.kgDir)
-
-			// Daemon status.
-			status.DaemonStatus = daemonRunning(absDir)
+			// Derived data: the vector sidecar, and whether an embedder is
+			// configured to rebuild it. There is no index and no daemon to
+			// report on; a read needs neither.
+			status.Vectors = vectorStatus(cfg.kgDir)
+			status.Embedder = embedderStatus(cfg.kgDir)
 
 			return writeOutput(cmd.OutOrStdout(), status)
 		},
@@ -87,17 +86,18 @@ func agentStatusCmd() *cobra.Command {
 
 type agentStatus struct {
 	Dir            string         `json:"dir"`
-	Backend        string         `json:"backend"`
 	EntityCount    int            `json:"entity_count"`
 	EntitiesByType map[string]int `json:"entities_by_type,omitempty"`
 	SchemaTypes    []string       `json:"schema_types,omitempty"`
-	IndexStatus    string         `json:"index_status"`
-	DaemonStatus   string         `json:"daemon_status"`
+	// Vectors describes the gitignored vector sidecar `kg similar` reads.
+	Vectors string `json:"vectors"`
+	// Embedder says where the embedding command came from, or that none is
+	// configured. kg never picks one for you (P8).
+	Embedder string `json:"embedder"`
 }
 
 func (s agentStatus) toTOON(w io.Writer) {
 	fmt.Fprintf(w, "dir: %s\n", s.Dir)
-	fmt.Fprintf(w, "backend: %s\n", s.Backend)
 	fmt.Fprintf(w, "entity_count: %d\n", s.EntityCount)
 	if len(s.EntitiesByType) > 0 {
 		types := make([]string, 0, len(s.EntitiesByType))
@@ -114,8 +114,8 @@ func (s agentStatus) toTOON(w io.Writer) {
 	if len(s.SchemaTypes) > 0 {
 		fmt.Fprintf(w, "schema_types[%d]: %s\n", len(s.SchemaTypes), strings.Join(s.SchemaTypes, ","))
 	}
-	fmt.Fprintf(w, "index_status: %s\n", s.IndexStatus)
-	fmt.Fprintf(w, "daemon_status: %s\n", s.DaemonStatus)
+	fmt.Fprintf(w, "vectors: %s\n", s.Vectors)
+	fmt.Fprintf(w, "embedder: %s\n", s.Embedder)
 }
 
 // ---------------------------------------------------------------------------
@@ -375,14 +375,14 @@ facts into the knowledge graph using this process:
 
 ### Example
 
-Given: "Paul mentioned he's been using LadybugDB for the graph index
-and really likes how it handles storage."
+Given: "Paul mentioned he's been using SQLite for the reporting job
+and really likes how it handles concurrent readers."
 
 Extract:
 ` + "```" + `bash
-kg find topic name~LadybugDB --dir={{.KGDir}}   # check if exists
-kg create topic ladybugdb name=LadybugDB category=technology --dir={{.KGDir}}
-kg link person:paul likes topic:ladybugdb --dir={{.KGDir}}
+kg find topic name~SQLite --dir={{.KGDir}}   # check if exists
+kg create topic sqlite name=SQLite category=technology --dir={{.KGDir}}
+kg link person:paul likes topic:sqlite --dir={{.KGDir}}
 ` + "```" + `
 
 ## Health Check
@@ -529,8 +529,8 @@ func agentMCPConfigCmd() *cobra.Command {
 
 			default:
 				config := map[string]any{
-					"command": kgBin,
-					"args":    []string{"mcp", "serve", "--dir", absDir},
+					"command":   kgBin,
+					"args":      []string{"mcp", "serve", "--dir", absDir},
 					"transport": "stdio",
 				}
 				enc := json.NewEncoder(w)
@@ -553,11 +553,6 @@ func agentCheckCmd() *cobra.Command {
 		Use:   "check",
 		Short: "Health check for the knowledge graph",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			absDir, err := filepath.Abs(cfg.kgDir)
-			if err != nil {
-				return err
-			}
-
 			w := cmd.OutOrStdout()
 			var problems []string
 
@@ -566,16 +561,16 @@ func agentCheckCmd() *cobra.Command {
 				problems = append(problems, "kg directory not found: "+cfg.kgDir)
 			}
 
-			// Index freshness.
-			idxStatus := indexFreshness(cfg.kgDir)
-			if idxStatus != "current" {
-				problems = append(problems, "index: "+idxStatus)
-			}
-
-			// Daemon status.
-			dStatus := daemonRunning(absDir)
-			if dStatus != "running" {
-				problems = append(problems, "daemon: "+dStatus)
+			// Derived data. An absent sidecar is only a problem when an
+			// embedder is configured to build one; a graph that never
+			// embedded anything is complete without it.
+			if _, err := store.ResolveEmbedder(cfg.kgDir); err != nil {
+				var missing *store.ErrNoEmbedder
+				if !errors.As(err, &missing) {
+					problems = append(problems, "embedder: "+err.Error())
+				}
+			} else if v := vectorStatus(cfg.kgDir); v != "present" {
+				problems = append(problems, "vectors: "+v+" (run 'kg sync')")
 			}
 
 			// Validation errors.
@@ -596,7 +591,6 @@ func agentCheckCmd() *cobra.Command {
 
 			result := checkResult{
 				Healthy:  len(problems) == 0,
-				Backend:  store.ActiveBackend(cfg.kgDir),
 				Problems: problems,
 			}
 
@@ -614,13 +608,11 @@ func agentCheckCmd() *cobra.Command {
 
 type checkResult struct {
 	Healthy  bool     `json:"healthy"`
-	Backend  string   `json:"backend"`
 	Problems []string `json:"problems,omitempty"`
 }
 
 func (r checkResult) toTOON(w io.Writer) {
 	fmt.Fprintf(w, "healthy: %v\n", r.Healthy)
-	fmt.Fprintf(w, "backend: %s\n", r.Backend)
 	if len(r.Problems) > 0 {
 		fmt.Fprintf(w, "problems[%d]:\n", len(r.Problems))
 		for _, p := range r.Problems {
@@ -654,37 +646,36 @@ func writeOutput(w io.Writer, v any) error {
 	}
 }
 
-func indexFreshness(kgDir string) string {
-	manifest, err := store.LoadManifest(kgDir)
+// vectorStatus describes the vector sidecar in one word an agent can branch on.
+func vectorStatus(kgDir string) string {
+	digest := ""
+	if emb, err := store.ResolveEmbedder(kgDir); err == nil {
+		digest = emb.Digest()
+	}
+	vs, err := vector.Open(store.CacheDir(kgDir), digest)
 	if err != nil {
-		return "missing"
-	}
-	if len(manifest.Files) == 0 {
-		return "empty"
-	}
-
-	// Compare manifest entries against actual entity files.
-	entities, err := store.ListEntities(kgDir)
-	if err != nil {
-		return "unknown"
-	}
-	if len(entities) == 0 && len(manifest.Files) == 0 {
-		return "current"
-	}
-	if len(entities) != len(manifest.Files) {
+		var missing *vector.ErrNoSidecar
+		if errors.As(err, &missing) {
+			return "absent"
+		}
 		return "stale"
 	}
-	return "current"
+	defer vs.Close()
+	return "present"
 }
 
-func daemonRunning(absDir string) string {
-	sockPath := daemon.SocketPathFor(absDir)
-	conn, err := net.Dial("unix", sockPath)
+// embedderStatus says where the embedding command came from, so an agent that
+// finds no vectors can tell "nobody configured one" from "it is misconfigured".
+func embedderStatus(kgDir string) string {
+	emb, err := store.ResolveEmbedder(kgDir)
 	if err != nil {
-		return "stopped"
+		var missing *store.ErrNoEmbedder
+		if errors.As(err, &missing) {
+			return "not configured"
+		}
+		return "error: " + err.Error()
 	}
-	defer conn.Close()
-	return "running"
+	return emb.Source
 }
 
 func sortedMapKeys[V any](m map[string]V) []string {

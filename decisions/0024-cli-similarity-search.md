@@ -1,5 +1,15 @@
 # 0024 — CLI Command for Similarity/Vector Search
 
+**AMENDED 2026-08-30 by [0027](0027-delete-index-and-daemon.md).** `kg similar` and its
+flags are unchanged; what backs them is not. Vectors are no longer entity attributes —
+`--field name` resolves against the gitignored sidecar, not against a `name_embedding`
+attribute — and the search is an exact brute-force scan rather than LadybugDB's
+approximate HNSW. Verified before the index was deleted to return the same top-10 in the
+same order with the same scores ([0026](0026-read-budget-and-scale-ceiling.md)). "Only
+available when using the LadybugDB backend" no longer applies: there is one binary and
+vector search is always available.
+
+
 **Status:** Proposed  
 **Date:** 2026-02-23  
 **Authors:** [Your Name]

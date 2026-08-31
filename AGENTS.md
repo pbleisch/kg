@@ -7,8 +7,9 @@
 ## Before a structural change
 
 [docs/PRINCIPLES.md](docs/PRINCIPLES.md) records the properties any rewrite of kg must
-preserve, what each costs, and which current choices (LadybugDB, the daemon, YAML,
-TOON, MCP) are explicitly *not* principles and may be discarded freely. It also lists
+preserve, what each costs, and which current choices (YAML, TOON, MCP) are explicitly
+*not* principles and may be discarded freely — LadybugDB and the daemon were two such
+choices and are gone. It also lists
 where the code currently violates its own principles. The nine principles are grouped
 into four areas — the graph on disk, the interface, the runtime, the record — so find
 the area your change lands on first: the principles in play are that group's two or
@@ -26,11 +27,34 @@ pipeline, plus what is deliberately not being built and which increment forces e
 PRINCIPLES.md's open questions. Read it before starting work that sounds like a
 milestone; it is edited as increments land, so it is a plan and not an ADR.
 
-Build and test require CGO and the LadybugDB native library (`mage build`; see
-[CONTRIBUTING.md](CONTRIBUTING.md)). **Verify locally — CI is not a usable signal.**
-Every run on `main` since v0.9.3 fails at the `Test` step (Linux-only; the suite passes
-on macOS), and as of 2026-08 GitHub Actions will not start jobs on this account at all
-for billing reasons.
+Build and test are plain Go — `mage build`, `mage check`. No CGO, no native library:
+increment 3 deleted LadybugDB, the index and the daemon (ADR-0027), and CI builds with
+`CGO_ENABLED=0` so a C dependency cannot creep back in. **Verify locally — CI is not a
+usable signal.** Every run on `main` since v0.9.3 fails at the `Test` step (Linux-only;
+the suite passes on macOS), and as of 2026-08 GitHub Actions will not start jobs on this
+account at all for billing reasons.
+
+## Reading, and the derived data
+
+There is no index and no daemon. A read opens files, and which files depends on the
+read: `store.ReadEntity` for a point read, `store.FindByType` for a typed find,
+`store.Loader` for traversal (reads as it reaches, caches what it read), and
+`store.LoadGraph` — a whole-corpus walk building ids, types and the reverse-edge map —
+only for the reads that genuinely need every entity: `back`, `stats`, `validate`, merge.
+Do not reach for `LoadGraph` in a read that does not need it; that is how a cheap read
+stops being cheap.
+
+Vectors live in a gitignored sidecar, `pkg/vector`: `.kg/.cache/vectors.bin` plus
+`vectors.idx`. Never in an entity file — `pkg/batch` strips `*_embedding` attributes at
+the write boundary, with a warning. `kg similar` scans the sidecar by brute force.
+
+The embedding command is **operator configuration, not graph content**: `KG_EMBED_COMMAND`
+or the gitignored `.kg/embedder.yaml`, absolute paths only, and kg refuses an
+`embedding:` block in `.kg/config.yaml` with the migration in the error text (ADR-0025).
+
+[ADR-0026](decisions/0026-read-budget-and-scale-ceiling.md) states the read budget and
+the scale ceiling and is **deliberately unratified** — PRINCIPLES.md open questions 1
+and 2 are Paul's. Cite it for the numbers; do not treat it as settled.
 
 ## The write boundary
 
@@ -50,6 +74,9 @@ what each file held so `--on-error=fail` can put the graph back.
 Two behaviours changed with it and will surprise: `command.Link` no longer
 mints a typeless stub for a missing source, and `kg apply` defaults to
 `--on-error=fail`. Both were how entities nobody submitted got into the graph.
+
+Writes no longer sync anything — there is nothing to sync. A batch does refresh the
+vector sidecar for the entities it touched, when an embedder is configured.
 
 Applying one idempotency key twice applies it once — the ledger is
 `.kg/.cache/apply/<key>.json`.
@@ -84,3 +111,9 @@ Keep this file for knowledge useful to almost every future agent session in this
 Do not repeat what the codebase already shows; point to the authoritative file or command instead.
 Prefer rewriting or pruning existing entries over appending new ones.
 When updating this file, preserve this bar for all agents and keep entries concise.
+
+One trap worth knowing: hundreds of files in the real corpus declare an `id` that
+disagrees with their path (PRINCIPLES.md violation #3, increment 4's job). Anything that
+walks the corpus and rewrites what it finds must write back to the file it read —
+`store.ListEntityFiles` and `store.WriteEntityAt` — not to `EntityPath(id)`, which skips
+one file and overwrites another.

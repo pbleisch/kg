@@ -1,50 +1,87 @@
 # Embedding Guide
 
-kg supports automatic vector embedding generation for entity attributes
-via an external command. This enables semantic similarity search with
-`kg similar`.
+kg generates vector embeddings for entity attributes by running a command you
+configure, and searches them with `kg similar`. kg never chooses, hosts or calls
+a model itself (P8): which model runs, where, and at what cost are yours.
+
+The vectors live in a gitignored sidecar beside the graph, never in the entity
+files (P2).
 
 ## Quick Start
 
 ```bash
-# 1. Scaffold the default embedding script
+# 1. Scaffold an embedding script and the file that names it
 kg embed --init
 
-# 2. Install Python dependencies
+# 2. Install its dependencies
 pip install -r .kg/scripts/requirements.txt
 
-# 3. Sync — embeddings are generated automatically
+# 3. Check what kg resolved, and from where
+kg embed --show
+
+# 4. Build the vector sidecar
 kg sync
 
-# 4. Search by similarity
+# 5. Search by similarity
 kg similar person --field name --like person:alice
 ```
 
 ## How It Works
 
-1. You configure which attributes to embed and an external command in
-   `.kg/config.yaml`.
-2. When you run `kg sync`, after indexing YAML files, kg computes a
-   content checksum for each configured attribute on each entity. If the
-   text has changed since the last embedding, it sends the text to your
-   command and stores the returned vector as a `<field>_embedding`
-   attribute on the entity.
-3. `kg similar` uses these stored vectors for cosine/dot-product search.
+1. You configure which attributes to embed and an external command — see
+   [Configuration](#configuration) below.
+2. `kg sync` computes a SHA-256 of each configured attribute's text on each
+   entity and compares it against what the sidecar recorded. Text that has not
+   changed is carried over untouched; text that has is sent to your command,
+   and the vector that comes back is written to the sidecar.
+3. `kg similar` scans the sidecar. The scan is exact and brute-force: 9 ms over
+   54,000 vectors on the one real corpus, which is faster than any index kg
+   would have to keep warm (see
+   [decisions/0026](../decisions/0026-read-budget-and-scale-ceiling.md)).
 
-Embeddings are tracked in `.cache/embed-manifest.json` so unchanged
-entities are skipped on subsequent runs.
+Two files under `.kg/.cache/` hold everything:
+
+| file | contents |
+|---|---|
+| `vectors.bin` | packed rows of `dim` float64s, row *i* at byte offset `i*dim*8`, host byte order, and nothing else |
+| `vectors.idx` | JSON: dimension, row count, and one entry per (entity, field) with its row, the entity's type, and the SHA-256 of the text it was built from |
+
+Both are derived. Delete `.kg/.cache/` and `kg sync` rebuilds it; `git status`
+is clean afterwards.
+
+The index doubles as the staleness record, so there is no separate embed
+manifest. It also records a digest of the embedder that produced it — the
+command string plus the contents of any script the command names — so changing
+the model invalidates the vectors even though every text checksum still matches.
+kg cannot detect every model change: a hosted model swapped behind the same
+endpoint leaves the digest alone. `kg sync --rebuild` is the answer to that, and
+P8 is why kg cannot do better.
 
 ## Configuration
 
-Add an `embedding` section to `.kg/config.yaml`:
+The embedding command is **operator configuration, not graph content**: it names
+a program on one machine. It does not go in `.kg/config.yaml`, which travels
+with the graph. See
+[decisions/0025](../decisions/0025-embedder-configuration.md) for the argument
+and for what went wrong when it did.
+
+kg resolves it from, first hit winning:
+
+**1. The environment** — how a pipeline in a separate code repository points kg
+at its own virtualenv without writing into the data repository:
+
+```bash
+export KG_EMBED_COMMAND="/abs/path/.venv/bin/python /abs/path/embed.py"
+export KG_EMBED_FIELDS="name,description"
+export KG_EMBED_BATCH=1
+```
+
+**2. `.kg/embedder.yaml`** — gitignored, written per checkout:
 
 ```yaml
-backend: auto
-
-embedding:
-  command: "python3 .kg/scripts/embed.py"
-  fields: [name, description]
-  batch: true
+command: "/usr/bin/python3 /abs/path/to/.kg/scripts/embed.py"
+fields: [name, description]
+batch: true
 ```
 
 | Field     | Required | Description |
@@ -53,33 +90,59 @@ embedding:
 | `fields`  | yes      | Entity attributes to embed |
 | `batch`   | no       | Use batch protocol (default: false) |
 
-## Sync-Integrated Embedding
+**Paths must be absolute**, or a bare program name on `PATH` — and that applies
+to the arguments too. `python .kg/scripts/embed.py` is refused, because it
+resolves against whatever directory kg happens to be run from: `kg sync` from
+one place would embed and from another would not.
 
-Embeddings run automatically as the final step of `kg sync` and
-`kg sync --rebuild`. If embedding is configured, sync will:
+`kg embed --show` prints what kg resolved and which source it came from, so
+"no vectors" is never a guess.
 
-1. Index all YAML files (the normal sync pass).
-2. Detect entities with stale or missing embeddings.
-3. Call the external command to generate vectors.
-4. Write the embedding attributes back to YAML files.
+## Sync
 
-The sync output reports how many entities were embedded:
+`kg sync` is the one command that rebuilds every derived artifact. It:
+
+1. Reads the graph.
+2. Compares each configured attribute's checksum against the sidecar.
+3. Calls the external command for the stale ones, in a stable order.
+4. Writes a new sidecar: fresh vectors, plus the unchanged ones carried across.
 
 ```
-sync complete: 42 synced, 10 embedded
+27158 entities; vectors: 54164 embedded, 0 carried, 0 dropped
 ```
 
-Embedding failures are best-effort — they produce warnings but don't
-fail the sync.
-
-You can also run `kg embed` directly as an escape hatch:
+A graph with **no embedder configured has no derived data to build**, and
+`kg sync` exits non-zero saying so. Pass `--no-embed` to say it deliberately.
+Exiting 0 having embedded nothing is how this used to go unnoticed.
 
 ```bash
-kg embed              # embed stale entities
-kg embed --rebuild    # force re-embed everything
-kg embed --dry-run    # show what would be embedded
-kg embed --json       # JSON output
+kg sync                     # bring the sidecar level with the graph
+kg sync --rebuild           # discard it and re-embed everything
+kg sync --dry-run           # report what would happen
+kg sync --no-embed          # this graph has no vectors, and that is on purpose
+kg embed --show             # what kg resolved, and from where
+kg embed --dry-run          # same, for the embed pass alone
+kg embed --json             # JSON output
+kg embed <id>...            # re-embed named entities only
 ```
+
+## Migrating a corpus that has vectors in its YAML
+
+Corpora written before vectors moved out carry them as `<field>_embedding`
+attributes. Harvest them into the sidecar — no model run needed:
+
+```bash
+kg sync --migrate-vectors --dry-run   # see what would move
+kg sync --migrate-vectors             # move them, and rewrite the files without
+```
+
+The sidecar is written before any entity file is touched, so an interrupted
+migration leaves the vectors in both places rather than neither. On the one real
+corpus this moved 54,148 vectors and took the entity files from 659.7 MB to
+14.9 MB, with the packed git repository going from 229 MB to 13 MB.
+
+`kg sync --strip-embeddings` deletes them instead of harvesting them, for a
+corpus you intend to re-embed anyway.
 
 ## External Command Protocol
 
@@ -150,15 +213,27 @@ json.dump(resp.json()["embedding"], sys.stdout)
 
 ## Storage
 
-Vectors are stored as entity attributes with the `_embedding` suffix:
+Vectors are **not** entity attributes. An entity file holds what someone
+authored:
 
 ```yaml
 id: person:alice
 type: person
 attributes:
   name: Alice Smith
-  name_embedding: [0.1, 0.2, 0.3, ...]
 ```
 
-These attributes are regular YAML values — they're versioned in git,
-visible in `kg get`, and indexed by `kg sync`.
+and the vector for `person:alice`'s `name` lives at a row in
+`.kg/.cache/vectors.bin`, found through `.kg/.cache/vectors.idx`. Nothing under
+`.kg/.cache/` is committed, and nothing there is a source of truth.
+
+`kg get --include-embeddings` still shows `<field>_embedding` attributes if a
+corpus has not been migrated yet; on a migrated corpus there are none to show.
+
+### Why the sidecar is machine-local
+
+`vectors.bin` is written in host byte order and mapped in directly, which is
+what makes the scan fast. A sidecar carried to a host of the opposite
+endianness is reported stale and rebuilt rather than misread. That is not a
+limitation to work around: the file is derived, it is gitignored, and it is
+never meant to travel.

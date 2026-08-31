@@ -33,9 +33,6 @@ func Link(kgDir, sourceID, relation, targetID string) error {
 	if err := store.WriteEntity(kgDir, e); err != nil {
 		return fmt.Errorf("writing entity: %w", err)
 	}
-	if err := store.Sync(kgDir); err != nil {
-		return fmt.Errorf("syncing index: %w", err)
-	}
 	return nil
 }
 
@@ -71,9 +68,6 @@ func Unlink(kgDir, sourceID, relation, targetID string) error {
 
 	if err := store.WriteEntity(kgDir, e); err != nil {
 		return fmt.Errorf("writing entity: %w", err)
-	}
-	if err := store.Sync(kgDir); err != nil {
-		return fmt.Errorf("syncing index: %w", err)
 	}
 	return nil
 }

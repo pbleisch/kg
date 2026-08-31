@@ -4,7 +4,8 @@ Thanks for your interest in contributing! Here's how to get started.
 
 ## Development Setup
 
-You'll need **Go 1.25+** and [Mage](https://magefile.org):
+You'll need **Go 1.25+** and [Mage](https://magefile.org). Nothing else — kg is
+pure Go, with no CGO and no native library to fetch:
 
 ```bash
 git clone https://github.com/pbleisch/kg.git
@@ -21,7 +22,7 @@ mage build
 4. Run the checks:
 
 ```bash
-mage check     # lint + tests
+mage check     # gofmt + go vet + tests + integration tests
 mage testRace  # race detector
 ```
 
@@ -29,17 +30,17 @@ mage testRace  # race detector
 
 ## What the CI Checks
 
-Every PR runs:
+Every PR runs, with `CGO_ENABLED=0` so a C dependency cannot creep back in:
 
-- `go vet` (lint)
+- `gofmt -l .` (must be empty)
+- `go vet`
 - Unit tests
-- Race detector tests
+- Race detector tests (the detector itself needs cgo; the product does not)
 - Integration tests (`-tags=integration`)
 - Build verification
 
-If your change touches LadybugDB code (anything behind the `ladybug` build
-tag), the CI also runs a separate job with CGO enabled against the native
-library.
+**CI is not currently a usable signal**, for reasons outside this repository —
+see the note in [AGENTS.md](AGENTS.md). Verify locally.
 
 ## Code Style
 

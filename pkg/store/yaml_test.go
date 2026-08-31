@@ -8,10 +8,10 @@ import (
 
 func TestParseEntityID(t *testing.T) {
 	tests := []struct {
-		id       string
-		wantType string
+		id        string
+		wantType  string
 		wantLocal string
-		wantErr  bool
+		wantErr   bool
 	}{
 		{"person:alice", "person", "alice", false},
 		{"project:atlas", "project", "atlas", false},

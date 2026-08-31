@@ -1,7 +1,8 @@
 # kg — Knowledge Graph CLI
 
-A Git-friendly knowledge graph stored as YAML entities with a fast local
-index. Designed for humans and AI agents alike.
+A Git-friendly knowledge graph stored as YAML entities. Reading it needs
+nothing running — no daemon, no index, no database. Designed for humans and AI
+agents alike.
 
 ## Quick Start
 
@@ -36,12 +37,8 @@ curl -fsSL "https://github.com/pbleisch/kg/releases/download/${VER}/kg_${VER}_${
   | sudo tar xzf - -C /usr/local/bin
 ```
 
-The release archive contains the binary and a `lib-ladybug/` directory with
-the [LadybugDB](https://ladybugdb.com) native library (bundled, no separate
-install needed). Extracting them together keeps the native library discoverable
-at runtime. If you later move only the binary, copy `lib-ladybug/` alongside
-it or install the library system-wide
-(`sudo cp lib-ladybug/liblbug.* /usr/local/lib/ && sudo ldconfig`).
+The archive contains one static binary and nothing else. kg is pure Go: no
+native library, no runtime dependency, nothing to keep beside it.
 
 ### Windows
 
@@ -50,23 +47,19 @@ $ver = (Invoke-RestMethod https://api.github.com/repos/pbleisch/kg/releases/late
 Invoke-WebRequest "https://github.com/pbleisch/kg/releases/download/$ver/kg_${ver}_windows_amd64.zip" `
   -OutFile kg.zip
 Expand-Archive kg.zip . -Force; Remove-Item kg.zip
-# Move kg.exe and lbug_shared.dll to the same directory in your PATH
+# Move kg.exe somewhere on your PATH
 ```
 
 ### From source
 
-Requires CGO and a C compiler (for LadybugDB native bindings):
+Go 1.25 or newer. No CGO, no C compiler, nothing to download:
 
 ```bash
 git clone https://github.com/pbleisch/kg.git
 cd kg
-mage build          # builds to bin/kg (downloads native lib if needed)
-mage install        # installs kg + lib-ladybug/ to $GOPATH/bin
+mage build          # builds to bin/kg
+mage install        # installs kg to $GOPATH/bin
 ```
-
-The native library is downloaded automatically on first build to
-`lib-ladybug/` and installed alongside the binary in `$GOPATH/bin/lib-ladybug/`
-so the rpath resolves correctly.
 
 ## Commands
 
@@ -89,8 +82,8 @@ so the rpath resolves correctly.
 | `kg dedup <type> --threshold --fields` | Find/merge duplicate entities by similarity |
 | `kg stats` | Graph metrics |
 | `kg validate` | Validate entities against schemas |
-| `kg sync` | Sync YAML to the index |
-| `kg daemon start\|stop\|status` | Background index server (auto-starts) |
+| `kg sync` | Rebuild derived data (the vector sidecar) |
+| `kg embed` | Generate embeddings (`--init`, `--show`, `--rebuild`, `--dry-run`) |
 | `kg watch` | Stream entity/relation change events |
 | `kg morph` | Define and use reusable path patterns |
 | `kg mcp serve` | Start MCP server (stdio) |
@@ -124,63 +117,61 @@ kg watch --json                      # force NDJSON output
 kg watch --json --snapshot           # emit all entities first, then stream
 kg watch --json --type game,mechanic # filter by entity type
 kg watch --json --debounce 100ms     # coalesce rapid changes
-kg watch --daemon                    # subscribe to running kg daemon
 ```
 
 Events: `init`, `created`, `updated`, `deleted`, `linked`, `unlinked`.
-
-## Daemon Mode
-
-The daemon holds the index open and serves queries via RPC, eliminating
-lock contention and repeated index open/close overhead:
-
-```bash
-kg daemon start     # start manually (foreground)
-kg daemon stop      # stop the daemon
-kg daemon status    # check if running
-```
-
-**Auto-start:** The first `kg` command automatically forks a daemon in
-the background. Subsequent commands connect via RPC instead of opening
-the index directly. The daemon exits after 30 minutes of inactivity.
-
-**Opt-out:** Set `KG_NO_DAEMON=1` to disable auto-start.
 
 ## Storage Model
 
 - **Source of truth:** YAML files in `.kg/entities/<type>/<id>.yaml`
 - **Schemas:** YAML files in `.kg/schema/<type>.yaml`
-- **Index:** LadybugDB cache in `.kg/.cache/` (gitignored, rebuilt with `kg sync`)
-- **Config:** `.kg/config.yaml`
+- **Derived data:** `.kg/.cache/` — gitignored, rebuilt by `kg sync`
+- **Config:** `.kg/config.yaml` (travels with the graph)
+- **Embedder:** `.kg/embedder.yaml` (gitignored, per checkout)
 
-The YAML files are designed to be committed to Git. The index is a local
-cache that accelerates queries.
+The YAML files are committed to Git. Everything under `.kg/.cache/` is
+recomputable from them and nothing else is.
 
-### Index Backend
+### Reading needs nothing running
 
-The index backend is configured in `.kg/config.yaml`:
+There is no index and no daemon. A read opens files:
 
-```yaml
-backend: ladybug
-```
+- a single-entity read is one file — about 3 ms, whatever the corpus size;
+- a typed find reads one directory;
+- only the reads that genuinely need every entity — `kg back`, `kg stats`,
+  `kg validate` — walk the whole graph, about 0.8 s over 27,000 entities.
 
-LadybugDB is the only supported backend. The `backend:` field is retained
-for forward compatibility but only `ladybug` is accepted.
-
-When the daemon is running, CLI commands connect to it via RPC instead
-of opening the index file directly. This eliminates lock contention and
-keeps the index hot in memory. See [Daemon Mode](#daemon-mode).
+[decisions/0026](decisions/0026-read-budget-and-scale-ceiling.md) states the
+latency budget and the corpus size it holds for, with the measurements behind
+both. [decisions/0027](decisions/0027-delete-index-and-daemon.md) records why
+the LadybugDB index and the daemon were deleted.
 
 ### Embeddings
 
-kg can automatically generate vector embeddings for entity attributes,
-enabling semantic similarity search with `kg similar`.
+kg generates vector embeddings for entity attributes by running a command you
+configure, and searches them with `kg similar`. kg never chooses, hosts or calls
+a model itself.
 
 ```bash
-kg embed --init                          # scaffold embedding script
+kg embed --init                          # scaffold a script and .kg/embedder.yaml
 pip install -r .kg/scripts/requirements.txt
-kg embed                                 # generate vectors
+kg embed --show                          # what kg resolved, and from where
+kg sync                                  # build the vector sidecar
 kg similar person --field name --like person:alice
+```
+
+The vectors go to `.kg/.cache/vectors.bin` with an id-to-row index beside it,
+never into the entity files. Changing the model changes not one entity file.
+
+The embedding command lives in `.kg/embedder.yaml` (gitignored, per checkout,
+absolute paths) or in `KG_EMBED_COMMAND`. It does not live in `.kg/config.yaml`,
+because that file travels with the graph and an interpreter path does not —
+see [decisions/0025](decisions/0025-embedder-configuration.md).
+
+Migrating a corpus written before vectors moved out:
+
+```bash
+kg sync --migrate-vectors    # harvest *_embedding attributes into the sidecar
 ```
 
 See [docs/embedding.md](docs/embedding.md) for the full guide.
@@ -190,7 +181,7 @@ See [docs/embedding.md](docs/embedding.md) for the full guide.
 `kg agent` provides onboarding and discovery for AI coding agents:
 
 ```bash
-kg agent status      # Graph state: entity counts, schema types, index health
+kg agent status      # Graph state: entity counts, schema types, vector sidecar
 kg agent schema      # Full schema dump in agent-readable format
 kg agent skill       # Generate a SKILL.md for agent platforms
 kg agent examples    # Example commands using your actual schema types
@@ -224,8 +215,8 @@ This project uses [Mage](https://magefile.org) as its build tool. Install it wit
 mage build       # compile to bin/kg
 mage test        # run tests
 mage testRace    # run tests with race detector
-mage lint        # go vet
-mage check       # lint + test
+mage lint        # go vet + gofmt check
+mage check       # lint + tests + integration tests
 mage cover       # test coverage report
 mage local       # build and copy to .kg/bin/kg-<os>
 ```
@@ -245,9 +236,8 @@ Recommended: use goreleaser which will build binaries and generate a changelog u
 goreleaser release --rm-dist
 ```
 
-The release produces a single `kg` binary linked against LadybugDB. The
-archive includes the binary and the `lib-ladybug/` native library directory.
-(`kg-ladybug` is a legacy alias — both binaries are identical.)
+The release produces one static `kg` binary per platform, cross-compiled from a
+single job. There is no native library to bundle.
 
 Manual changelog generation (if not using goreleaser):
 
@@ -269,43 +259,12 @@ Notes on good release notes:
 ### Building
 
 ```bash
-mage build           # compile to bin/kg (requires CGO + native libs)
+mage build           # compile to bin/kg
 mage test            # run tests
-mage check           # lint + test
+mage check           # lint + tests + integration tests
 ```
 
-Requires Go 1.25+.
-
-### Installing Ladybug native libraries
-
-Release archives already bundle the native library. When you extract the
-archive, the `lib-ladybug/` directory is placed next to the binary and the
-binary finds it automatically via its embedded rpath — no extra steps needed.
-
-```
-kg_vX.Y.Z_linux_amd64.tar.gz
-  kg                   ← binary
-  lib-ladybug/
-    liblbug.so         ← native lib, found automatically at runtime
-```
-
-macOS and Windows archives follow the same layout (`.dylib` / `.dll`).
-
-**Only needed if you install the binary system-wide** (e.g., move `kg` to
-`/usr/local/bin/` without `lib-ladybug/` beside it). In that case, copy the
-lib to a standard library path:
-
-```bash
-# Linux
-sudo cp lib-ladybug/liblbug.so /usr/local/lib/ && sudo ldconfig
-
-# macOS
-sudo cp lib-ladybug/liblbug.dylib /usr/local/lib/
-```
-
-Or keep the extracted directory together and add it to `PATH` instead of
-moving the binary. For more options see the official Ladybug installation
-guide: https://docs.ladybugdb.com/installation/
+Requires Go 1.25+. No CGO.
 
 ## Principles and Architecture Decisions
 
@@ -315,9 +274,10 @@ must preserve, what each one costs, and — deliberately — which current choic
 change.
 
 Individual design decisions are recorded in `decisions/` as lightweight ADRs. Key
-decisions include storage and indexing (0001), data model (0002), CLI
-grammar (0004), MCP server (0007), daemon (0008), agent integration
-(0021), and LadybugDB index backend (0022).
+decisions include storage (0001), data model (0002), CLI grammar (0004), MCP
+server (0007), agent integration (0021), where the embedding command is
+configured (0025), the read budget and scale ceiling (0026, **unratified**), and
+the deletion of the index and the daemon (0027, superseding 0008 and 0022).
 
 [docs/increments.md](docs/increments.md) is the plan: where kg and the GDKB ingestion
 pipeline go next, as numbered increments with a goal, deliverables and a checkable

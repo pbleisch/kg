@@ -12,13 +12,13 @@ import (
 
 // Watcher watches .kg/entities/ for changes and emits events.
 type Watcher struct {
-	kgDir   string
-	fw      *fsnotify.Watcher
-	events  chan Event
-	done    chan struct{}
-	wg      sync.WaitGroup
-	mu      sync.Mutex
-	cache   map[string]*store.Entity // keyed by entity ID
+	kgDir  string
+	fw     *fsnotify.Watcher
+	events chan Event
+	done   chan struct{}
+	wg     sync.WaitGroup
+	mu     sync.Mutex
+	cache  map[string]*store.Entity // keyed by entity ID
 }
 
 // NewWatcher creates a watcher for the given kg directory.

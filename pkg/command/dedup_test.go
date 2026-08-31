@@ -26,9 +26,6 @@ func setupDedupDir(t *testing.T, entities []*store.Entity) string {
 			t.Fatalf("WriteEntity(%s): %v", e.ID, err)
 		}
 	}
-	if err := store.Sync(dir); err != nil {
-		t.Fatalf("Sync: %v", err)
-	}
 	return dir
 }
 

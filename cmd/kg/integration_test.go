@@ -9,11 +9,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 // runCmd executes the root Cobra command with the given args and returns
 // any captured output (from commands that use cmd.OutOrStdout) and the error.
-// It resets the shared cfg struct between invocations.
+// It resets the shared cfg struct and every flag between invocations.
 func runCmd(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 
@@ -22,6 +25,11 @@ func runCmd(t *testing.T, args ...string) (string, error) {
 	cfg.format = ""
 	cfg.quiet = false
 
+	// Cobra keeps flag values on the command tree, and this harness reuses one
+	// tree for the whole suite. Without this, a flag one test passes is still
+	// set for every test after it.
+	resetFlags(rootCmd)
+
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)
@@ -29,6 +37,19 @@ func runCmd(t *testing.T, args ...string) (string, error) {
 
 	err := rootCmd.Execute()
 	return buf.String(), err
+}
+
+// resetFlags restores every flag on a command tree to its default.
+func resetFlags(c *cobra.Command) {
+	reset := func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	}
+	c.Flags().VisitAll(reset)
+	c.PersistentFlags().VisitAll(reset)
+	for _, sub := range c.Commands() {
+		resetFlags(sub)
+	}
 }
 
 // initKG runs "kg init" in a temp directory and returns the kg dir path.
@@ -222,9 +243,89 @@ func TestSync(t *testing.T) {
 		t.Fatalf("kg create failed: %v", err)
 	}
 
-	_, err = runCmd(t, "sync", "--dir="+dir)
+	// A graph with no embedder has no derived data to build, and `kg sync`
+	// says so rather than exiting 0 having done nothing.
+	out, err := runCmd(t, "sync", "--dir="+dir)
+	if err == nil {
+		t.Fatalf("kg sync with no embedder exited 0: %q", out)
+	}
+	if !strings.Contains(err.Error()+out, "no embedding command configured") {
+		t.Errorf("kg sync failed for the wrong reason: %v", err)
+	}
+
+	out, err = runCmd(t, "sync", "--no-embed", "--dir="+dir)
 	if err != nil {
-		t.Fatalf("kg sync failed: %v", err)
+		t.Fatalf("kg sync --no-embed failed: %v", err)
+	}
+	if !strings.Contains(out, "1 entities") || !strings.Contains(out, "embedding skipped") {
+		t.Errorf("kg sync --no-embed did not report the graph: %q", out)
+	}
+}
+
+// TestSyncRebuildsDerivedData is P2's check at the CLI: delete every derived
+// artifact, run one command, and the entity files are untouched.
+func TestSyncRebuildsDerivedData(t *testing.T) {
+	dir := initKG(t)
+
+	script := filepath.Join(t.TempDir(), "embed.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ncat >/dev/null\necho '[0.1, 0.2, 0.3]'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "embedder.yaml"),
+		[]byte("command: \""+script+"\"\nfields: [name]\nbatch: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runCmd(t, "create", "person", "alice", "name=Alice", "--dir="+dir); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	entityPath := filepath.Join(dir, "entities", "person", "alice.yaml")
+	before, err := os.ReadFile(entityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runCmd(t, "sync", "--dir="+dir); err != nil {
+		t.Fatalf("kg sync: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".cache", "vectors.bin")); err != nil {
+		t.Fatalf("sync built no sidecar: %v", err)
+	}
+
+	if err := os.RemoveAll(filepath.Join(dir, ".cache")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runCmd(t, "sync", "--dir="+dir); err != nil {
+		t.Fatalf("kg sync after deleting the cache: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".cache", "vectors.bin")); err != nil {
+		t.Fatalf("sidecar was not rebuilt: %v", err)
+	}
+
+	after, err := os.ReadFile(entityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Errorf("rebuilding derived data changed the entity file:\n%s\n%s", before, after)
+	}
+
+	// And the sidecar answers a search.
+	out, err := runCmd(t, "similar", "person", "--like", "person:alice", "--field", "name", "--json", "--dir="+dir)
+	if err != nil {
+		t.Fatalf("kg similar: %v", err)
+	}
+	if !strings.Contains(out, "person:alice") {
+		t.Errorf("kg similar returned nothing useful: %q", out)
+	}
+}
+
+// `kg daemon` is gone, and nothing may quietly bring it back.
+func TestDaemonCommandIsGone(t *testing.T) {
+	dir := initKG(t)
+	if _, err := runCmd(t, "daemon", "status", "--dir="+dir); err == nil {
+		t.Error("kg daemon still exists")
 	}
 }
 
@@ -295,24 +396,45 @@ func TestEmbedInit(t *testing.T) {
 		t.Errorf("requirements.txt missing sentence-transformers: %q", string(data))
 	}
 
-	// Verify config.yaml was updated with embedding section.
+	// The command goes to embedder.yaml, never to config.yaml: config.yaml
+	// travels with the graph and an interpreter path does not (ADR-0025).
+	embData, err := os.ReadFile(filepath.Join(dir, "embedder.yaml"))
+	if err != nil {
+		t.Fatalf("embedder.yaml not created: %v", err)
+	}
+	embStr := string(embData)
+	if !strings.Contains(embStr, "command:") {
+		t.Error("embedder.yaml missing 'command:'")
+	}
+	for _, line := range strings.Split(embStr, "\n") {
+		if !strings.HasPrefix(line, "command:") {
+			continue
+		}
+		for _, tok := range strings.Fields(strings.TrimPrefix(line, "command:")) {
+			tok = strings.Trim(tok, `"`)
+			if strings.Contains(tok, "/") && !strings.HasPrefix(tok, "/") {
+				t.Errorf("embedder.yaml command holds a working-directory-relative path %q: %s", tok, line)
+			}
+		}
+	}
+
 	cfgData, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
 	if err != nil {
 		t.Fatalf("reading config.yaml: %v", err)
 	}
-	cfgStr := string(cfgData)
-	if !strings.Contains(cfgStr, "embedding:") {
-		t.Error("config.yaml missing 'embedding:' section")
+	if strings.Contains(string(cfgData), "\nembedding:") {
+		t.Error("config.yaml gained an embedding block; it travels with the graph")
 	}
-	if !strings.Contains(cfgStr, "command:") {
-		t.Error("config.yaml missing 'command:' in embedding section")
+
+	// Both the derived cache and the per-checkout embedder are gitignored.
+	giData, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	if err != nil {
+		t.Fatalf("reading .kg/.gitignore: %v", err)
 	}
-	if strings.Contains(cfgStr, "auto:") {
-		t.Error("config.yaml should not contain 'auto:' field")
-	}
-	// Commented-out embedding lines should have been removed.
-	if strings.Contains(cfgStr, "# embedding:") {
-		t.Error("config.yaml still has commented-out embedding block")
+	for _, want := range []string{".cache/", "embedder.yaml"} {
+		if !strings.Contains(string(giData), want) {
+			t.Errorf(".kg/.gitignore missing %q:\n%s", want, giData)
+		}
 	}
 
 	// Verify the generated script is syntactically valid Python.

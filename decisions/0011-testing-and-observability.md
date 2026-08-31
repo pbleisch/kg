@@ -1,5 +1,11 @@
 # 0011 - Testing and Observability
 
+**AMENDED 2026-08-30 by [0027](0027-delete-index-and-daemon.md).** CI no longer runs
+against a real LadybugDB index; it builds and tests with `CGO_ENABLED=0`, which is the
+check that a C dependency does not return. The Prometheus endpoint "in daemon mode" was
+already unimplemented (PRINCIPLES.md violation #7) and is now unimplementable.
+
+
 Status: Proposed
 
 Date: 2026-02-01

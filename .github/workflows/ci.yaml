@@ -13,7 +13,9 @@ jobs:
   check:
     runs-on: ubuntu-latest
     env:
-      CGO_ENABLED: 1
+      # kg is pure Go since the LadybugDB index was removed (ADR-0027).
+      # Building with CGO off is the check that it stays that way.
+      CGO_ENABLED: 0
     strategy:
       matrix:
         go-version: ['1.25']
@@ -24,30 +26,24 @@ jobs:
         with:
           go-version: ${{ matrix.go-version }}
 
-      - name: Download ladybug libraries
-        run: curl -sL https://raw.githubusercontent.com/LadybugDB/go-ladybug/refs/heads/master/download_lbug.sh | bash -s -- -out lib-ladybug
+      - name: Format
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then echo "gofmt needs to run on:"; echo "$out"; exit 1; fi
 
       - name: Vet
         run: go vet ./...
-        env:
-          CGO_LDFLAGS: -L${{ github.workspace }}/lib-ladybug
 
       - name: Test
         run: go test ./... -count=1
-        env:
-          CGO_LDFLAGS: -L${{ github.workspace }}/lib-ladybug
 
       - name: Test (race detector)
         run: go test -race ./... -count=1
         env:
-          CGO_LDFLAGS: -L${{ github.workspace }}/lib-ladybug
+          CGO_ENABLED: 1  # the race detector needs cgo; the product does not
 
       - name: Integration tests
         run: go test -tags=integration ./... -count=1
-        env:
-          CGO_LDFLAGS: -L${{ github.workspace }}/lib-ladybug
 
       - name: Build
         run: go build -o bin/kg ./cmd/kg/
-        env:
-          CGO_LDFLAGS: -L${{ github.workspace }}/lib-ladybug

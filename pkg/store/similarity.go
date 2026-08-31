@@ -4,21 +4,15 @@ import (
 	"fmt"
 	"math"
 	"sort"
-)
 
-// VectorSearcher is an optional capability some index backends expose.
-// Callers should type-assert an Indexer to check availability:
-//
-//	if vs, ok := idx.(store.VectorSearcher); ok { ... }
-type VectorSearcher interface {
-	SimilarEntities(params SimilarityParams) ([]SimilarityResult, error)
-}
+	"github.com/pbleisch/kg/pkg/vector"
+)
 
 // SimilarityParams controls a vector similarity query.
 type SimilarityParams struct {
 	TypeName string
 	Vector   []float64 // query vector
-	Fields   []string  // attribute names (or logical names) to search
+	Fields   []string  // logical field names to search
 	Metric   string    // "cosine" (default) or "dot"
 	TopN     int
 }
@@ -30,8 +24,90 @@ type SimilarityResult struct {
 	MatchField string // field that produced the best score
 }
 
+// Similar ranks entities against a query vector by scanning the sidecar.
+//
+// The scan is exact and brute-force. The index it replaces was an approximate
+// HNSW structure inside a 1.3 GB database that had to be built before the
+// first query could be answered; the sidecar is 83 MB of floats that mmap in
+// and scan in tens of milliseconds. See ADR-0026 for the measurements and the
+// corpus ceiling they hold for.
+//
+// Only the top-N entities are read from disk, so the cost of the query does
+// not depend on how large the matching entities are.
+func Similar(kgDir string, params SimilarityParams) ([]SimilarityResult, error) {
+	// The embedder is not required to search: a caller supplying a raw vector
+	// is entitled to search whatever the sidecar holds. When one is
+	// configured, its digest is passed so a sidecar from a different embedder
+	// is refused rather than silently compared against.
+	digest := ""
+	if emb, err := ResolveEmbedder(kgDir); err == nil {
+		digest = emb.Digest()
+	}
+
+	vs, err := vector.Open(CacheDir(kgDir), digest)
+	if err != nil {
+		return nil, err
+	}
+	defer vs.Close()
+
+	matches, err := vs.Search(vector.Query{
+		Vector: params.Vector,
+		Type:   params.TypeName,
+		Fields: params.Fields,
+		Metric: params.Metric,
+		TopN:   params.TopN,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	results := make([]SimilarityResult, 0, len(matches))
+	for _, m := range matches {
+		e, err := ReadEntity(kgDir, m.ID)
+		if err != nil {
+			// The sidecar names an entity the graph no longer has. That is
+			// stale derived data, not a broken graph: report the id so a
+			// caller can see what to rebuild, and keep going.
+			e = &Entity{ID: m.ID, Type: m.Type}
+		}
+		results = append(results, SimilarityResult{
+			Entity:     e,
+			Score:      m.Score,
+			MatchField: m.Field,
+		})
+	}
+	return results, nil
+}
+
+// VectorFor returns the stored vector for one entity field, which is how
+// `kg similar --like` turns an entity into a query.
+func VectorFor(kgDir, entityID string, fields []string) ([]float64, string, error) {
+	digest := ""
+	if emb, err := ResolveEmbedder(kgDir); err == nil {
+		digest = emb.Digest()
+	}
+	vs, err := vector.Open(CacheDir(kgDir), digest)
+	if err != nil {
+		return nil, "", err
+	}
+	defer vs.Close()
+
+	for _, field := range fields {
+		if v, ok := vs.Vector(entityID, field); ok {
+			// The mapping goes away with vs, so hand back a copy.
+			out := make([]float64, len(v))
+			copy(out, v)
+			return out, field, nil
+		}
+	}
+	return nil, "", fmt.Errorf("entity %s has no stored vector for fields %v; run `kg sync` to embed it", entityID, fields)
+}
+
 // ExtractVector converts an attribute value to a []float64.
-// Handles []float64 (native) and []any (from JSON unmarshal).
+// Handles []float64 (native) and []any (from JSON or YAML unmarshal).
+//
+// Kept for corpora written before vectors moved to the sidecar, and for
+// callers that hand kg a vector as data rather than reading one back.
 func ExtractVector(v any) ([]float64, bool) {
 	switch tv := v.(type) {
 	case []float64:
@@ -95,38 +171,27 @@ func computeScore(metric string, a, b []float64) (float64, error) {
 	return CosineSimilarity(a, b)
 }
 
-// SortResults sorts results descending by score in place.
+// SortResults sorts results descending by score, then by entity ID so equal
+// scores come back in the same order on every run (P6).
 func SortResults(results []SimilarityResult) {
 	sort.Slice(results, func(i, j int) bool {
-		return results[i].Score > results[j].Score
+		if results[i].Score != results[j].Score {
+			return results[i].Score > results[j].Score
+		}
+		return results[i].Entity.ID < results[j].Entity.ID
 	})
 }
 
-// EmbeddingLister is an optional capability for bulk-loading all stored
-// embeddings. Used by the daemon to populate an in-memory vector cache.
-type EmbeddingLister interface {
-	ListEmbeddings() ([]EmbeddingEntry, error)
-}
-
-// EmbeddingEntry is a single stored embedding vector.
-type EmbeddingEntry struct {
-	EntityID   string
-	EntityType string
-	Field      string
-	Vec        []float64
-}
-
 // ResolveVector extracts a vector from entity attributes for the given field.
-// Resolution order: field as-is → field+"_embedding". Returns the resolved
-// field name and vector, or empty/nil if no vector found.
+// Resolution order: field as-is → field+"_embedding".
+//
+// Only legacy corpora carry these attributes; new vectors are in the sidecar.
 func ResolveVector(attrs map[string]any, field string) (string, []float64) {
-	// Try exact field name first (might be a raw vector attribute).
 	if val, ok := attrs[field]; ok {
 		if vec, ok := ExtractVector(val); ok && len(vec) > 0 {
 			return field, vec
 		}
 	}
-	// Fallback: try <field>_embedding.
 	embField := field + "_embedding"
 	if val, ok := attrs[embField]; ok {
 		if vec, ok := ExtractVector(val); ok && len(vec) > 0 {

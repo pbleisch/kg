@@ -17,23 +17,20 @@ func setupTestKG(t *testing.T, entities []*store.Entity) string {
 			t.Fatalf("WriteEntity(%s): %v", e.ID, err)
 		}
 	}
-	if err := store.Sync(kgDir); err != nil {
-		t.Fatalf("Sync: %v", err)
-	}
 	return kgDir
 }
 
 func TestBack_FindsEntitiesPointingToTarget(t *testing.T) {
 	kgDir := setupTestKG(t, []*store.Entity{
 		{
-			ID:   "person:alice",
-			Type: "person",
+			ID:         "person:alice",
+			Type:       "person",
 			Attributes: map[string]any{"name": "Alice"},
 			Relations:  map[string][]string{"worksOn": {"project:atlas"}},
 		},
 		{
-			ID:   "person:bob",
-			Type: "person",
+			ID:         "person:bob",
+			Type:       "person",
 			Attributes: map[string]any{"name": "Bob"},
 			Relations:  map[string][]string{"worksOn": {"project:atlas"}},
 		},

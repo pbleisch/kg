@@ -65,9 +65,9 @@ look.
 *What the bytes are, what is allowed among them, and what makes them a graph.* This is
 kg's storage position — plain files, derived data outside, portable without the tool —
 and a 2026 prior-art review found it is now also the industry's, published as a
-specification. **Every principle in this area is currently violated somewhere**: five of
-the nine recorded violations (#1, #3, #4, #6, #8) land here. It is at once the area kg
-is least distinctive in and the area it holds worst.
+specification. Five of the nine recorded violations (#1, #3, #4, #6, #8) land here.
+**#1 and #8 were fixed in increment 3**; #3, #4 and #6 remain, so P3 is still violated
+and P1 still is on the atomicity of writes.
 
 ### P1 — The files are the graph, and a graph travels without the tool
 
@@ -239,9 +239,10 @@ the old P7 comes back with it.
 *What kg requires to be alive, and what kg is allowed to run on your behalf.* Both
 principles here say the same thing in opposite directions: kg owns no resident process
 of its own (P4) and hosts no model of anyone else's (P8). The cost of both lands on the
-operator, and both are checkable by turning things off. P8 holds. P4 is violated in
-practice (#2): the daemon is required in all but name, which is the single largest gap
-between what this document claims and what the binary does.
+operator, and both are checkable by turning things off. P8 holds. **P4 held again from
+increment 3**: the index and the daemon are deleted, a cold single-entity read is 3 ms,
+and ADR-0026 states the budget and the corpus size it holds for — the number P4's own
+check has always demanded and never had.
 
 ### P4 — Reading needs no running service
 
@@ -254,6 +255,12 @@ route around the tool.
 read, a typed find, and a full-graph traversal all complete inside a stated budget.
 State the budget and the corpus size it holds for. If the honest answer to "how long
 without the daemon?" is measured in tens of seconds, this principle is broken.
+
+**The budget and the ceiling are proposed in
+[ADR-0026](../decisions/0026-read-budget-and-scale-ceiling.md) and are not yet
+ratified** — open questions 1 and 2 below. Measured at 27,158 entities with every cache
+cold and nothing running: single-entity read 3 ms, typed find 0.61 s over 20,704 of one
+type, full-graph traversal 0.81 s, similarity search 0.10 s.
 
 **Cost.** Query power is capped at what can be computed from a cold walk plus cheap
 derived state: no Cypher, no query planner, no index you cannot rebuild in seconds.
@@ -331,8 +338,8 @@ a decision is not a principle.
 
 | Choice | Recorded in | The principle it was serving (and its area) | Freely replaceable by |
 |---|---|---|---|
-| LadybugDB, Cypher, CGO, the bundled native library | 0010, 0022 | "Reads are fast" (P4, area C) | SQLite, an in-memory map, a flat sidecar, nothing at all |
-| The daemon, `net/rpc`, Unix sockets, auto-start | 0008 | "Reads are fast" (P4, area C) — it exists *only* because opening the index costs 22 s | Deleting it, if the cold path is fast enough |
+| ~~LadybugDB, Cypher, CGO, the bundled native library~~ | 0010, 0022 | "Reads are fast" (P4, area C) | **Discarded in increment 3** (ADR-0027) for a cold walk plus a flat vector sidecar |
+| ~~The daemon, `net/rpc`, Unix sockets, auto-start~~ | 0008 | "Reads are fast" (P4, area C) — it existed *only* because opening the index cost 22 s | **Discarded in increment 3** (ADR-0027). The cold path is fast enough: 3 ms |
 | YAML | 0002 | "Plain, diffable, human-readable" (P1, area A) | JSON, TOML, Markdown + frontmatter |
 | One file per entity, `.kg/entities/<type>/<id>.yaml` | 0002, 0016 | "Independently addressable and diffable" (P1, area A) | Any layout that keeps entities separately diffable |
 | TOON | 0006 | "Machine-first, deterministic, token-efficient" (P6, area B) | JSON, NDJSON, anything stable and compact |
@@ -344,9 +351,11 @@ a decision is not a principle.
 | Optimistic concurrency, no locks, no auto-commit | 0009 | "Git is the concurrency model" (P1, area A) | Locks, if single-writer stops holding |
 | LICENSE, CODE_OF_CONDUCT, SECURITY, goreleaser, multi-platform install | — | **Deliberate intent**, not over-engineering: kg is meant to be published if it proves useful. Not a principle, but not waste either. | — |
 
-The single most important row is the second. **The daemon is not a feature; it is the
-cost of a choice made in ADR-0022.** A rewrite that removes the heavy index removes the
-daemon, the daemon-status bug, the stale-PID bug, and the socket-path limit with it.
+The single most important row was the second. **The daemon was not a feature; it was the
+cost of a choice made in ADR-0022.** Removing the heavy index removed the daemon, the
+daemon-status bug, the stale-PID bug, the second-daemon-clobbers-the-first bug and the
+socket-path limit with it — which is what increment 3 did, and what the first two rows
+now record.
 
 ---
 
@@ -357,14 +366,14 @@ Every row is verified in this repository or measured on the one real corpus
 
 | # | Violation | Evidence | Principle |
 |---|---|---|---|
-| 1 | **Embeddings are written into the entity files.** `s.entity.Attributes[field+"_embedding"] = vec` then `WriteEntity`. | `pkg/store/embed.go:199-201` and `:231-233`. On the real corpus: **643.5 MB of 659.6 MB (97.55%) is embedding floats**; content is 16.2 MB. A re-embed rewrote 8,981 files, +3.07M/−2.93M lines. **99.05%** of a typical data commit is float churn. | **P2.** ADR-0022 says the index is "a disposable cache rebuilt from YAML"; `docs/embedding.md` documents writing vectors back into YAML as intended behaviour. The two contradict each other and the code follows the doc. |
-| 2 | **The read path requires the daemon in practice.** | Measured: `kg get` cold **116 s** (building a 1.34 GB index over 16 MB of content), warm-but-daemonless **22 s**, daemon-served ~20 ms. Consequence: every non-trivial consumer script bypasses kg and parses the YAML directly — including two that regex embeddings out of the files rather than call `kg similar`. | **P4**, and ADR-0008's own claim that "the daemon is never required." The bypassing is P1 working as intended; the *reason* for it is P4 broken. |
-| 3 | **Identity is derived from the ID but never enforced.** `EntityPath` computes the path from the ID; `walkEntities` reads whatever it finds and never checks for collisions. | `pkg/store/yaml.go:29`, `:104`. Measured: **265 duplicate IDs shadowing 265 files that no query can ever reach**, 162 files whose directory disagrees with their `type:`, 269 whose `id` ≠ `<dir>:<basename>`. `kg stats` reports 26,891 entities over 27,157 files and no one notices. | **P3.** |
+| 1 | ~~**Embeddings are written into the entity files.**~~ **FIXED, increment 3.** | Was: `pkg/store/embed.go:199-201`, **643.5 MB of 659.6 MB (97.55%)** embedding floats against 16.2 MB of content; a re-embed rewrote 8,981 files. Now: vectors go to `.kg/.cache/vectors.bin`, gitignored. Migrating the real corpus moved 54,148 (entity, field) pairs into 53,630 sidecar rows and took the entity files to **14.92 MB** and the packed repository from 229 MB to **13 MB**. A model change now re-embeds every vector and leaves `git status` clean. | **P2**, held. ADR-0027; `docs/embedding.md` rewritten to match. |
+| 2 | ~~**The read path requires the daemon in practice.**~~ **FIXED, increment 3.** | The recorded 116 s cold was optimistic: re-measured on the same corpus it is **783.8 s**. Now, with no index and nothing running, `kg get` is **3–4 ms** cold, a whole-graph walk 0.82 s, `kg similar` 0.05–0.12 s. ADR-0026 has the table. The consumer scripts that bypassed kg no longer have a reason to. | **P4**, held. ADR-0008 and ADR-0022 superseded by ADR-0027. |
+| 3 | **Identity is derived from the ID but never enforced.** `EntityPath` computes the path from the ID; `walkEntities` reads whatever it finds and never checks for collisions. | `pkg/store/yaml.go:29`, `:104`. Measured: **265 duplicate IDs shadowing 265 files that no query can ever reach**, 162 files whose directory disagrees with their `type:`, 269 whose `id` ≠ `<dir>:<basename>`. `kg stats` reports 26,891 entities over 27,157 files and no one notices. Increment 3 added a second, independent count from the embedding pass: 54,148 (entity, field) pairs produce 53,630 sidecar rows, and `kg sync` now names the 534-pair collapse. It also found the sharper edge — a whole-corpus rewrite that writes to `EntityPath(id)` rather than to the file it read skips one file and overwrites another, which is why `store.ListEntityFiles` and `store.WriteEntityAt` exist. | **P3.** |
 | 4 | **Validation is silent about exactly what matters.** Unknown attributes are skipped; entities with no schema are skipped entirely; relation targets are never checked. | `pkg/schema/schema.go:103` (`if !ok \|\| val == nil { continue }`), `cmd/kg/validate.go:44`. Result: **2,118 entities (7.8%) carry an attribute literally named `--dir` with the value `.kg`** — a CLI flag that became knowledge — and `kg validate` prints "all entities valid". | **P3.** The open-world *content* rule is intended; the structural silence is not. |
 | 5 | **The corruption in #4 entered through an untyped write boundary.** A model was prompted to emit `kg create …` shell text; a pipeline regex-scraped it, `shlex`-split it, and treated "anything containing `=`" as an attribute. | The typed boundary already existed and was skipped: `cmd/kg/apply.go:18-36` defines a versioned manifest with an idempotency key, and the MCP tools take typed objects. | **P5**, violated by the consumer — but kg accepted the result without complaint (#4), which is kg's failure. |
 | 6 | **Writes to the source of truth are not atomic; writes to the disposable index are.** `WriteEntity` truncates in place with `os.WriteFile`. | `pkg/store/yaml.go:72`, against ADR-0008's temp-file → fsync → rename for the *manifest*. The durability care is on the artifact that can be rebuilt, not on the one that cannot. | **P1** — if the files are the graph, they deserve at least the index's care. |
 | 7 | **No code written after v0.9.3 has ever passed CI, and CI cannot run at all right now.** | Two separate faults. (a) The last green run on `main` is the v0.9.3 commit; the **ten runs since then all failed at the `Test` step** — checkout, ladybug download and `go vet` all pass, tests fail, everything after is skipped. Run logs have expired (HTTP 410), so the specific failure is unrecorded, and the same suite passes locally on macOS, so it is Linux-CI-specific. (b) **GitHub Actions now refuses to start jobs on this account**: a run triggered 2026-08-29 died in 2 s with *"The job was not started because recent account payments have failed or your spending limit needs to be increased."* Separately, `origin/main` is two commits behind local `main` — `48a0e04` and `77d87ff` were never pushed and have never been built. `CONTRIBUTING.md` still describes a separate CGO job from the removed dual-binary era. | **P9** — ADR-0011 records a gate that is now decorative, and (b) must be cleared before anyone can even find out why (a) happens. |
-| 8 | **An 11.7 MB compiled binary is tracked at the repository root.** `kg-ladybug`, mode 100755. `.gitignore` covers `/kg` and `/bin/` but not this. | `git ls-files kg-ladybug`. The same class of leak put a stale tracked binary into the consumer repo, where it made a fresh clone unrunnable. | **P2.** |
+| 8 | ~~**An 11.7 MB compiled binary is tracked at the repository root.**~~ **FIXED, increment 3.** `kg-ladybug` deleted. | The name it carried is gone too: there is one `kg` binary, pure Go, and no variant to alias. | **P2**, held. |
 | 9 | **kg does not dogfood itself.** There is no `.kg/` in this repository. | A knowledge-graph tool with no knowledge graph has no daily proof its own claims hold. | — |
 
 **By area.** *A, the graph on disk:* #1, #3, #4, #6, #8 — five of the eight attributed
@@ -372,14 +381,19 @@ rows, and all three of the area's principles. *B, the interface:* #5 alone, and 
 was the consumer's failure to use the boundary, not the boundary's. *C, the runtime:* #2.
 *D, the record:* #7. Row #9 is attributed to no principle.
 
+**Status after increment 3.** #1, #2 and #8 are fixed; area C holds outright. Area A is
+down to #3, #4 and #6, all three of which are increment 4's subject. #5, #7 and #9 are
+untouched.
+
 Two things fall out of that split. **The area kg is least distinctive in is the area it
 holds worst** — area A's position is the one the field has since standardised, and it is
 where every structural violation lives. And **the area that distinguishes kg is the one
 it mostly holds**: area B's typed write boundary was built correctly and then bypassed by
 a caller, which is a different and cheaper problem than not having built it.
 
-Noted, not fixed — this document changes no code. #7 and #8 are trivially and obviously
-broken.
+*Originally noted, not fixed — this document changes no code. Increments 3 onward do;
+each fixed row says which one, and cites the ADR.* #7 remains broken and is not this
+repository's to fix.
 
 ---
 
@@ -394,6 +408,11 @@ regrouping is not licence to add, remove, or soften a principle.
    be required. That is only meaningful with a number attached: *what read latency, on
    what corpus size, with everything cold, counts as passing?* Until that is fixed, "no
    service required" is unfalsifiable and the daemon comes back.
+   **STILL OPEN.** [ADR-0026](../decisions/0026-read-budget-and-scale-ceiling.md)
+   proposes an answer — yes as an optimization, never as a requirement, with a four-row
+   budget to turn it off against — and is deliberately left unratified. Increment 3 was
+   built to that budget because an implementation must choose something; that must not
+   be mistaken for the question being settled.
 
 2. **What is the stated scale ceiling?** ADR-0014 says 100k entities. The measured
    corpus is 27k and walks cold in under a second once derived data is evicted. If the
@@ -402,6 +421,11 @@ regrouping is not licence to add, remove, or soften a principle.
    different systems; pick one. **P7's revision now leans on this answer too**: the case
    for a library rests on construction being cheap enough that nothing needs amortizing
    across calls, and at millions it is not.
+   **STILL OPEN.** ADR-0026 proposes **100,000 entities**, with the measurement it
+   projects from: 27,158 entities of 14.92 MB walk in 0.81 s, so 100k is roughly 55 MB
+   and roughly 3 s. At a million it is ~30 s and `back`, `stats` and `validate` would
+   need a persistent reverse index — which is the artifact that needed keeping warm.
+   Unratified.
 
 3. **Where does identity live — in the file or in the path?** Both are defensible. A
    slug in the file makes renames free and collisions detectable. A path-derived ID
@@ -421,11 +445,10 @@ regrouping is not licence to add, remove, or soften a principle.
    precondition, not an option.
 
 6. **Publish when?** Open-sourcing is stated intent, and it constrains the rewrite: a
-   stranger must install and run kg in one command. Today that means CGO, a bundled
-   native library, rpath resolution, and a release pinned to LadybugDB v0.13.1 because
-   newer upstream releases ship no assets. If publication is near, "installs from a
-   single static binary" is a hard constraint on the index choice. If it is far, it is
-   only a preference.
+   stranger must install and run kg in one command. **The blocker is gone as of increment
+   3**: no CGO, no bundled native library, no rpath, no LadybugDB pin — one static binary
+   per platform from one cross-compiling job. The question is now only *when*, not
+   *whether it is possible*.
 
 7. **Is P3 one principle or two?** Grouping placed it in area A because its enforced
    half — identity is unique, declared identity agrees with location, a relation points
@@ -461,6 +484,12 @@ regrouping is not licence to add, remove, or soften a principle.
 *Written 2026-08-29 against `dcafd83`; regrouped by area the same day, with the nine
 principles, their numbers, checks and costs unchanged. Corpus measurements are from the
 GDKB/kg state investigation of the same date.*
+
+***Updated 2026-08-30 for increment 3.*** Violations #1, #2 and #8 are fixed and say so;
+question 6's blocker is gone; questions 1 and 2 have a **proposed and unratified** answer
+in ADR-0026 and are still open. **No principle's statement, number, check or cost
+changed** — the point of the increment was to stop violating three of them, not to move
+them.
 
 ***P7 revised 2026-08-29***, on Paul's decision — *"I like the library plus CLI model.
 Feels more useful."* — from **the integration boundary is a process, not a library** to

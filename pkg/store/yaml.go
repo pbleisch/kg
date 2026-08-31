@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -132,4 +133,144 @@ func walkEntities(dir string) ([]*Entity, error) {
 		return nil, err
 	}
 	return entities, nil
+}
+
+// FindByType reads one type's directory and returns the entities matching the
+// query options.
+//
+// It deliberately does not build a Graph: a typed find needs one directory,
+// and making it pay for the whole corpus is how a read that should be cheap
+// stops being cheap.
+func FindByType(kgDir, typeName string, opts QueryOptions) ([]*Entity, error) {
+	entities, err := ListEntitiesByType(kgDir, typeName)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil // an absent type is an empty result, not an error
+		}
+		return nil, err
+	}
+	sort.Slice(entities, func(i, j int) bool { return entities[i].ID < entities[j].ID })
+
+	var results []*Entity
+	matched := 0
+	for _, e := range entities {
+		if !MatchFilters(e, opts.Filters) {
+			continue
+		}
+		if matched < opts.Offset {
+			matched++
+			continue
+		}
+		results = append(results, project(e, opts))
+		matched++
+		if opts.Limit > 0 && len(results) >= opts.Limit {
+			break
+		}
+	}
+	return results, nil
+}
+
+// Loader reads entities on demand and remembers what it has read.
+//
+// Traversal touches the same entity repeatedly and only ever reaches the part
+// of the graph the relations lead to, so reading lazily costs the reachable
+// set rather than the corpus. A full walk is Graph; this is for the queries
+// that are not full walks.
+type Loader struct {
+	kgDir string
+	cache map[string]*Entity
+}
+
+// NewLoader returns a Loader for a graph directory.
+func NewLoader(kgDir string) *Loader {
+	return &Loader{kgDir: kgDir, cache: make(map[string]*Entity)}
+}
+
+// Entity returns one entity, reading it the first time it is asked for. A
+// missing entity is a cached miss, not an error: a dangling relation target is
+// reported by validation (P3), never by a traversal blowing up.
+func (l *Loader) Entity(id string) (*Entity, bool) {
+	if e, ok := l.cache[id]; ok {
+		return e, e != nil
+	}
+	e, err := ReadEntity(l.kgDir, id)
+	if err != nil {
+		l.cache[id] = nil
+		return nil, false
+	}
+	l.cache[id] = e
+	return e, true
+}
+
+// Relations returns the targets of one relation on one entity.
+func (l *Loader) Relations(id, relation string) []string {
+	e, ok := l.Entity(id)
+	if !ok {
+		return nil
+	}
+	return e.Relations[relation]
+}
+
+// EntityFile pairs an entity with the file it was read from.
+//
+// The two are not interchangeable: EntityPath derives a path from an id, and
+// on a corpus where some file's declared id disagrees with where it sits
+// (PRINCIPLES.md violation #3) those differ. Anything that walks the corpus and
+// rewrites what it finds must write back to the file it read, or it edits one
+// entity and clobbers another.
+type EntityFile struct {
+	Path   string
+	Entity *Entity
+}
+
+// ListEntityFiles walks .kg/entities/ and returns every entity with its path,
+// sorted by path so a whole-corpus pass is deterministic.
+func ListEntityFiles(kgDir string) ([]EntityFile, error) {
+	entitiesDir := filepath.Join(kgDir, "entities")
+	var out []EntityFile
+
+	err := filepath.WalkDir(entitiesDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) && path == entitiesDir {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".yaml") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", path, err)
+		}
+		var e Entity
+		if err := yaml.Unmarshal(data, &e); err != nil {
+			return fmt.Errorf("parsing %s: %w", path, err)
+		}
+		out = append(out, EntityFile{Path: path, Entity: &e})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out, nil
+}
+
+// WriteEntityAt writes an entity to an explicit path rather than to the path
+// its id implies. Use it when rewriting a file you have already read.
+func WriteEntityAt(path string, e *Entity) error {
+	journalNote(path)
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("creating directory for %s: %w", path, err)
+	}
+	data, err := yaml.Marshal(e)
+	if err != nil {
+		return fmt.Errorf("marshaling entity %q: %w", e.ID, err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+	return nil
 }

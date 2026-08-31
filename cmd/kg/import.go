@@ -77,9 +77,6 @@ func init() {
 			if err := store.WriteEntity(cfg.kgDir, &e); err != nil {
 				return fmt.Errorf("writing entity: %w", err)
 			}
-			if err := store.Sync(cfg.kgDir); err != nil {
-				return fmt.Errorf("syncing index: %w", err)
-			}
 			fmt.Fprintln(cmd.OutOrStdout(), e.ID)
 			return nil
 		},

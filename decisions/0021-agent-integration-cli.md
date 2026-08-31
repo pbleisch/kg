@@ -1,5 +1,12 @@
 # 0021 — Agent Integration CLI (`kg agent`)
 
+**AMENDED 2026-08-30 by [0027](0027-delete-index-and-daemon.md).** `kg agent status`
+and `kg agent check` no longer report daemon status, index staleness, or a backend: there
+is none of the three. They report the vector sidecar (`absent` / `stale` / `present`) and
+where the embedding command was resolved from. That is a contract change on a surface
+whose audience is agents.
+
+
 Status: Decided
 
 Date: 2026-02-08

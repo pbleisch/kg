@@ -1,13 +1,14 @@
 package batch
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
-	"sync"
 
 	"github.com/pbleisch/kg/pkg/command"
 	"github.com/pbleisch/kg/pkg/store"
+	"github.com/pbleisch/kg/pkg/vector"
 )
 
 // A Dedup records one entity folded into an existing one.
@@ -91,34 +92,51 @@ func Apply(kgDir string, env Envelope, records []Record, opts Options) (*Result,
 		return prior, nil
 	}
 
+	// Dedup needs a vector for each incoming entity. Compute them all in one
+	// call to the embedding command, and keep them here rather than on the
+	// records: a vector is derived data and must not reach an entity file (P2).
+	var queryVecs map[int]map[string][]float64
 	if opts.OnConflict == ConflictDedup {
-		preEmbed(kgDir, recs, opts.DedupFields)
+		queryVecs = preEmbed(kgDir, recs, opts.DedupFields)
+	}
+
+	// Whatever vectors the records carried have been harvested. They must not
+	// reach a file: an entity holds what someone authored, and 384 floats are
+	// not that (P2). This is the boundary that was letting them through.
+	if n := stripDerivedAttrs(recs); n > 0 {
+		res.Warnings = append(res.Warnings, Warning{
+			Code:    "derived_attribute",
+			Message: fmt.Sprintf("%d embedding attribute(s) were used for dedup and not written: vectors live in .kg/.cache/, not in entity files", n),
+		})
+	}
+
+	// The dedup candidate set is the vector sidecar as it stands when the
+	// batch starts. It does not see entities this batch creates — the index it
+	// replaced did not either, because sync was suppressed for the batch — so
+	// two near-identical new entities in one batch both land, and the next
+	// `kg dedup` adjudicates them.
+	var sidecar *vector.Store
+	if opts.OnConflict == ConflictDedup {
+		if s, err := vector.Open(store.CacheDir(kgDir), ""); err == nil {
+			sidecar = s
+			defer sidecar.Close()
+		}
+	}
+
+	// A merge has to find every entity linking to its source. Load the graph
+	// once for the batch rather than once per merge.
+	var graph *store.Graph
+	if opts.OnConflict == ConflictDedup || hasMerge(recs) {
+		graph, _ = store.LoadGraph(kgDir)
 	}
 
 	// One batch, one transaction: the journal remembers what every touched
 	// file held so an abort can put the graph back.  on-error warn and skip
 	// deliberately trade that atomicity for progress and do not roll back.
 	journal := store.BeginJournal(kgDir)
-	store.BeginBatch()
 
-	var idx store.Indexer
-	if opened, err := store.OpenIndex(kgDir); err == nil {
-		idx = opened
-	}
-	closeIdx := func() {
-		if idx != nil {
-			idx.Close()
-			idx = nil
-		}
-	}
-
-	// Put the files back before the index is rebuilt: syncing first would
-	// index a half-written graph and then leave that index describing files
-	// the rollback has already changed.
 	abort := func(err error) (*Result, error) {
-		closeIdx()
 		rbErr := journal.Rollback()
-		store.EndBatch(kgDir)
 		if rbErr != nil {
 			return nil, fmt.Errorf("%w (rollback also failed: %v)", err, rbErr)
 		}
@@ -126,7 +144,7 @@ func Apply(kgDir string, env Envelope, records []Record, opts Options) (*Result,
 	}
 
 	remap := make(map[string]string)
-	for _, r := range recs {
+	for i, r := range recs {
 		applyRemap(&r, remap)
 
 		var err error
@@ -134,7 +152,7 @@ func Apply(kgDir string, env Envelope, records []Record, opts Options) (*Result,
 		case OpCreate, OpUpsert:
 			var into string
 			var skipped bool
-			into, skipped, err = applyEntity(kgDir, r, opts, idx)
+			into, skipped, err = applyEntity(kgDir, r, opts, queryVecs[i], sidecar, graph)
 			switch {
 			case err != nil, skipped:
 			case into != "":
@@ -171,7 +189,7 @@ func Apply(kgDir string, env Envelope, records []Record, opts Options) (*Result,
 			_, err = command.Merge(kgDir, r.From, r.Target, command.MergeOptions{
 				PreferSource: r.Prefer == "source",
 				CrossType:    true,
-				Idx:          idx,
+				Graph:        graph,
 			})
 			if err == nil {
 				res.Updated++
@@ -187,8 +205,6 @@ func Apply(kgDir string, env Envelope, records []Record, opts Options) (*Result,
 		}
 	}
 
-	closeIdx()
-	syncErr := store.EndBatch(kgDir)
 	journal.Close()
 
 	sort.SliceStable(res.Dedups, func(a, b int) bool { return res.Dedups[a].From < res.Dedups[b].From })
@@ -198,13 +214,61 @@ func Apply(kgDir string, env Envelope, records []Record, opts Options) (*Result,
 			Message: fmt.Sprintf("batch applied but its idempotency key was not recorded: %v", err),
 		})
 	}
-	if syncErr != nil {
+	// Bring the vector sidecar level with what the batch wrote. Only the
+	// touched entities are re-embedded; the rest are carried across. A graph
+	// with no embedder configured has no sidecar to maintain, which is a
+	// state, not a failure.
+	if err := refreshVectors(kgDir, recs); err != nil {
 		res.Warnings = append(res.Warnings, Warning{
-			Code:    "sync",
-			Message: fmt.Sprintf("entities written but the index was not synced (run 'kg sync'): %v", syncErr),
+			Code:    "vectors",
+			Message: fmt.Sprintf("entities written but the vector sidecar was not updated (run 'kg sync'): %v", err),
 		})
 	}
 	return res, nil
+}
+
+// hasMerge reports whether a batch contains an operation that rewrites
+// inbound links, and therefore needs the whole graph.
+func hasMerge(recs []Record) bool {
+	for _, r := range recs {
+		if r.Op == OpMerge {
+			return true
+		}
+	}
+	return false
+}
+
+// refreshVectors re-embeds the entities a batch touched. A graph with no
+// embedder is skipped silently: there is nothing derived to bring level.
+func refreshVectors(kgDir string, recs []Record) error {
+	emb, err := store.ResolveEmbedder(kgDir)
+	if err != nil {
+		var missing *store.ErrNoEmbedder
+		if errors.As(err, &missing) {
+			return nil
+		}
+		return err
+	}
+	// Deletes and merges are named too: an entity that is gone must lose its
+	// rows, or `kg similar` keeps returning it.
+	var ids []string
+	for _, r := range recs {
+		switch r.Op {
+		case OpCreate, OpUpsert:
+			if r.Entity != nil {
+				ids = append(ids, r.Entity.ID)
+			}
+		case OpSet, OpDelete:
+			ids = append(ids, r.Target)
+		case OpMerge:
+			ids = append(ids, r.From, r.Target)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	_, err = store.EmbedWith(kgDir, emb, false, false, ids...)
+	return err
 }
 
 // applyRemap rewrites a record's references through the dedup remap table.
@@ -232,9 +296,9 @@ func applyRemap(r *Record, remap map[string]string) {
 // applyEntity writes a create or upsert.  `into` names the entity this one was
 // folded into, when dedup found a match; `skipped` says the conflict policy
 // left an existing entity alone.
-func applyEntity(kgDir string, r Record, opts Options, idx store.Indexer) (into string, skipped bool, err error) {
+func applyEntity(kgDir string, r Record, opts Options, queryVecs map[string][]float64, sidecar *vector.Store, graph *store.Graph) (into string, skipped bool, err error) {
 	if opts.OnConflict == ConflictDedup {
-		into, err = applyDedup(kgDir, r, opts, idx)
+		into, err = applyDedup(kgDir, r, opts, queryVecs, sidecar, graph)
 		return into, false, err
 	}
 	if r.Op == OpUpsert {
@@ -301,13 +365,22 @@ func applySet(kgDir string, r Record) error {
 	return nil
 }
 
-// preEmbed computes every dedup embedding the batch needs in one call rather
-// than one subprocess per entity.
-func preEmbed(kgDir string, recs []Record, fields []string) {
-	ecfg, err := store.LoadConfig(kgDir)
-	if err != nil || ecfg.Embedding == nil || ecfg.Embedding.Command == "" {
-		return
-	}
+// preEmbed computes every dedup query vector the batch needs in one call to
+// the embedding command rather than one subprocess per entity.
+//
+// The vectors are returned, keyed by record index and field. They used to be
+// written onto the record as a "<field>_embedding" attribute, which meant a
+// dedup batch wrote 384 floats into every entity file it created — the exact
+// thing P2 forbids, arriving through the one boundary that was supposed to
+// stop it.
+func preEmbed(kgDir string, recs []Record, fields []string) map[int]map[string][]float64 {
+	out := make(map[int]map[string][]float64)
+
+	// A missing embedder is not a failure: records that carry their own
+	// vectors still dedup, and records that do not simply land. It is a
+	// degraded dedup, not a refused batch.
+	emb, embErr := store.ResolveEmbedder(kgDir)
+
 	type target struct {
 		rec   int
 		field string
@@ -322,9 +395,13 @@ func preEmbed(kgDir string, recs []Record, fields []string) {
 			continue
 		}
 		for _, field := range fields {
-			embKey := field + "_embedding"
-			if val, ok := r.Entity.Attributes[embKey]; ok {
+			// A record that already carries a vector supplies its own.
+			if val, ok := r.Entity.Attributes[field+"_embedding"]; ok {
 				if vec, ok := store.ExtractVector(val); ok && len(vec) > 0 {
+					if out[i] == nil {
+						out[i] = make(map[string][]float64)
+					}
+					out[i][field] = vec
 					continue
 				}
 			}
@@ -342,59 +419,51 @@ func preEmbed(kgDir string, recs []Record, fields []string) {
 			targets = append(targets, target{rec: i, field: field})
 		}
 	}
-	if len(inputs) == 0 {
-		return
+	if len(inputs) == 0 || embErr != nil {
+		return out
 	}
-	vectors, err := store.RunEmbedBatch(ecfg.Embedding.Command, inputs)
+	vectors, err := store.RunEmbedBatch(emb.Command, inputs)
 	if err != nil || len(vectors) != len(inputs) {
-		return
+		return out
 	}
 	for i, t := range targets {
-		recs[t.rec].Entity.Attributes[t.field+"_embedding"] = vectors[i]
+		if out[t.rec] == nil {
+			out[t.rec] = make(map[string][]float64)
+		}
+		out[t.rec][t.field] = vectors[i]
 	}
+	return out
 }
 
 // applyDedup writes a create or upsert, folding it into a similar existing
 // entity when one is close enough.
-func applyDedup(kgDir string, r Record, opts Options, idx store.Indexer) (string, error) {
-	queryVecs := make(map[string][]float64)
-	for _, field := range opts.DedupFields {
-		if val, ok := r.Entity.Attributes[field+"_embedding"]; ok {
-			if vec, ok := store.ExtractVector(val); ok && len(vec) > 0 {
-				queryVecs[field] = vec
-			}
-		}
-	}
+func applyDedup(kgDir string, r Record, opts Options, queryVecs map[string][]float64, sidecar *vector.Store, graph *store.Graph) (string, error) {
+	// queryVecs came from preEmbed, which harvested both what the record
+	// carried and what the embedder produced for the rest.
 	if len(queryVecs) == 0 {
 		return "", applyCreateOrUpsert(kgDir, r)
 	}
 
 	bestScore, bestID := 0.0, ""
-	if vs, ok := idx.(store.VectorSearcher); ok && idx != nil {
-		var mu sync.Mutex
-		var wg sync.WaitGroup
+	if sidecar != nil {
 		for _, field := range opts.DedupFields {
 			qv, ok := queryVecs[field]
 			if !ok {
 				continue
 			}
-			wg.Add(1)
-			go func(f string, v []float64) {
-				defer wg.Done()
-				results, err := vs.SimilarEntities(store.SimilarityParams{
-					TypeName: r.Entity.Type, Fields: []string{f}, Vector: v, TopN: 1,
-				})
-				if err == nil && len(results) > 0 {
-					mu.Lock()
-					if results[0].Score > bestScore {
-						bestScore, bestID = results[0].Score, results[0].Entity.ID
-					}
-					mu.Unlock()
-				}
-			}(field, qv)
+			matches, err := sidecar.Search(vector.Query{
+				Vector: qv, Type: r.Entity.Type, Fields: []string{field}, TopN: 1,
+			})
+			if err != nil || len(matches) == 0 {
+				continue
+			}
+			if matches[0].Score > bestScore {
+				bestScore, bestID = matches[0].Score, matches[0].ID
+			}
 		}
-		wg.Wait()
 	} else {
+		// No sidecar: fall back to whatever vectors the entity files still
+		// carry. Corpora written before vectors moved out keep working.
 		existing, err := store.ListEntitiesByType(kgDir, r.Entity.Type)
 		if err != nil {
 			return "", applyCreateOrUpsert(kgDir, r)
@@ -429,7 +498,7 @@ func applyDedup(kgDir string, r Record, opts Options, idx store.Indexer) (string
 			return "", fmt.Errorf("writing entity before merge: %w", err)
 		}
 		if _, err := command.Merge(kgDir, r.Entity.ID, bestID, command.MergeOptions{
-			CrossType: true, Idx: idx,
+			CrossType: true, Graph: graph,
 		}); err != nil {
 			return "", fmt.Errorf("dedup merge %s → %s: %w", r.Entity.ID, bestID, err)
 		}
@@ -471,4 +540,26 @@ func KeyFor(prefix, contentHash string) string {
 		key = key[:maxKeyLen]
 	}
 	return key
+}
+
+// stripDerivedAttrs removes embedding attributes from every record's entity
+// and reports how many it removed.
+//
+// It runs after preEmbed has taken what dedup needs and before the first
+// write, so a producer may still supply a vector — it is used, and then it is
+// not persisted.
+func stripDerivedAttrs(recs []Record) int {
+	n := 0
+	for _, r := range recs {
+		if r.Entity == nil {
+			continue
+		}
+		for k := range r.Entity.Attributes {
+			if strings.HasSuffix(k, "_embedding") {
+				delete(r.Entity.Attributes, k)
+				n++
+			}
+		}
+	}
+	return n
 }

@@ -10,25 +10,17 @@ import (
 	"github.com/pbleisch/kg/pkg/store"
 )
 
-// Similar finds entities of the given type ranked by vector similarity.
-// Returns an error if the active backend does not support vector search.
+// Similar finds entities of the given type ranked by vector similarity,
+// reading the vector sidecar.
 func Similar(kgDir string, params store.SimilarityParams) ([]store.SimilarityResult, error) {
-	if err := store.Sync(kgDir); err != nil {
-		return nil, fmt.Errorf("syncing index: %w", err)
-	}
+	return store.Similar(kgDir, params)
+}
 
-	idx, err := store.OpenIndex(kgDir)
-	if err != nil {
-		return nil, fmt.Errorf("opening index: %w", err)
-	}
-	defer idx.Close()
-
-	vs, ok := idx.(store.VectorSearcher)
-	if !ok {
-		return nil, fmt.Errorf("active index backend does not support similarity search")
-	}
-
-	return vs.SimilarEntities(params)
+// VectorForEntity returns an entity's stored vector, which is how
+// `kg similar --like` turns an entity into a query vector.
+func VectorForEntity(kgDir, entityID string, fields []string) ([]float64, error) {
+	vec, _, err := store.VectorFor(kgDir, entityID, fields)
+	return vec, err
 }
 
 // ParseVector parses a comma-separated string of floats into a []float64.

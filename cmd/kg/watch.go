@@ -1,18 +1,13 @@
 package main
 
 import (
-	"bufio"
-	"encoding/json"
 	"fmt"
-	"net"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
 
-	"github.com/pbleisch/kg/internal/daemon"
 	"github.com/pbleisch/kg/internal/watch"
 	"github.com/pbleisch/kg/pkg/store"
 	"github.com/spf13/cobra"
@@ -30,8 +25,6 @@ func init() {
 	watchCmd.Flags().Bool("snapshot", false, "emit all current entities as created events on startup")
 	watchCmd.Flags().String("type", "", "comma-separated entity type filter")
 	watchCmd.Flags().Duration("debounce", 0, "coalesce rapid changes (e.g., 100ms)")
-	watchCmd.Flags().Bool("daemon", false, "subscribe to running kg daemon instead of watching directly")
-
 	rootCmd.AddCommand(watchCmd)
 }
 
@@ -72,12 +65,6 @@ func runWatch(cmd *cobra.Command, args []string) error {
 				typeFilter[t] = true
 			}
 		}
-	}
-
-	// Check for daemon mode.
-	daemonFlag, _ := cmd.Flags().GetBool("daemon")
-	if daemonFlag {
-		return runWatchDaemon(enc, typeFilter)
 	}
 
 	// Create watcher.
@@ -229,47 +216,4 @@ func entityName(e *store.Entity) string {
 		return fmt.Sprintf("%v", name)
 	}
 	return ""
-}
-
-func runWatchDaemon(enc watch.Encoder, typeFilter map[string]bool) error {
-	absDir, err := filepath.Abs(cfg.kgDir)
-	if err != nil {
-		return err
-	}
-	sockPath := daemon.SocketPathFor(absDir)
-	conn, err := net.Dial("unix", sockPath)
-	if err != nil {
-		return fmt.Errorf("daemon not running (could not connect to %s): %w\nStart it with: kg daemon start", sockPath, err)
-	}
-	defer conn.Close()
-
-	if _, err := conn.Write([]byte("subscribe")); err != nil {
-		return fmt.Errorf("subscribing to daemon: %w", err)
-	}
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
-	// Read NDJSON lines from daemon.
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		scanner := bufio.NewScanner(conn)
-		for scanner.Scan() {
-			var ev watch.Event
-			if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
-				continue
-			}
-			if matchesTypeFilter(ev, typeFilter) {
-				enc.Encode(ev)
-			}
-		}
-	}()
-
-	select {
-	case <-sigCh:
-		return nil
-	case <-done:
-		return nil
-	}
 }

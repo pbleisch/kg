@@ -1,10 +1,17 @@
 # 0022 — LadybugDB Index Backend
 
-Status: Decided
+**SUPERSEDED 2026-08-30 by [0027](0027-delete-index-and-daemon.md).** There is no index
+backend. This ADR's own claim — that the index is "a disposable cache rebuilt from YAML"
+— was the argument for deleting it: on the one real corpus it was 1.3 GB of cache over
+15 MB of knowledge, and rebuilding it cost thirteen minutes. Cypher and variable-length
+path queries went with it, having no caller.
+
+
+Status: Superseded by 0027 (2026-08-30)
 
 Date: 2025-07-14
 
-Updated: 2026-04
+Updated: 2026-04, 2026-08-30
 
 Authors: Paul
 

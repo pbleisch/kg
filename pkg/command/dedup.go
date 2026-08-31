@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/pbleisch/kg/pkg/store"
+	"github.com/pbleisch/kg/pkg/vector"
 )
 
 // DedupOptions configures deduplication behavior.
@@ -19,8 +20,8 @@ type DedupOptions struct {
 
 // DedupCluster is a group of similar entities to be merged.
 type DedupCluster struct {
-	CanonicalID string          `json:"canonical_id"`
-	Duplicates  []DedupMatch    `json:"duplicates"`
+	CanonicalID string       `json:"canonical_id"`
+	Duplicates  []DedupMatch `json:"duplicates"`
 }
 
 // DedupMatch is a single duplicate entity with its similarity score.
@@ -66,30 +67,52 @@ func FindDuplicates(kgDir, typeName string, opts DedupOptions) (*DedupResult, er
 
 	result := &DedupResult{TotalEntities: len(entities)}
 
-	// Extract vectors for all entities.
+	// Vectors come from the sidecar. A corpus written before they moved out of
+	// the entity files still has them as attributes, so both are tried — the
+	// sidecar first, because it is the one `kg sync` maintains.
+	sidecar, sidecarErr := openSidecar(kgDir)
+	if sidecar != nil {
+		defer sidecar.Close()
+	}
+
 	var indexed []entityVectors
+	missing := 0
 	for _, e := range entities {
 		ev := entityVectors{entity: e, vectors: make(map[string][]float64)}
 		hasVector := false
 		for _, field := range opts.Fields {
-			embKey := field + "_embedding"
-			val, ok := e.Attributes[embKey]
-			if !ok {
-				continue
+			var vec []float64
+			if sidecar != nil {
+				if v, ok := sidecar.Vector(e.ID, field); ok {
+					vec = v
+				}
 			}
-			vec, ok := store.ExtractVector(val)
-			if !ok || len(vec) == 0 {
+			if vec == nil {
+				if _, v := store.ResolveVector(e.Attributes, field); len(v) > 0 {
+					vec = v
+				}
+			}
+			if len(vec) == 0 {
 				continue
 			}
 			ev.vectors[field] = vec
 			hasVector = true
 		}
 		if !hasVector {
-			result.Warnings = append(result.Warnings,
-				fmt.Sprintf("%s: no embeddings for fields %v", e.ID, opts.Fields))
+			missing++
 			continue
 		}
 		indexed = append(indexed, ev)
+	}
+
+	// One warning naming the count, not one per entity: on a corpus with no
+	// sidecar that used to be 27,000 lines of the same sentence.
+	if missing > 0 {
+		msg := fmt.Sprintf("%d of %d entities have no vector for fields %v", missing, len(entities), opts.Fields)
+		if sidecarErr != nil {
+			msg += fmt.Sprintf(" (%v)", sidecarErr)
+		}
+		result.Warnings = append(result.Warnings, msg)
 	}
 
 	if len(indexed) < 2 {
@@ -249,4 +272,19 @@ func ApplyDedup(kgDir string, result *DedupResult, opts DedupOptions) error {
 		}
 	}
 	return nil
+}
+
+// openSidecar opens the vector sidecar if there is one. A missing or stale
+// sidecar is not an error here: dedup falls back to whatever vectors the entity
+// files still carry, and reports how many entities it could not score.
+func openSidecar(kgDir string) (*vector.Store, error) {
+	digest := ""
+	if emb, err := store.ResolveEmbedder(kgDir); err == nil {
+		digest = emb.Digest()
+	}
+	s, err := vector.Open(store.CacheDir(kgDir), digest)
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
 }
