@@ -1,11 +1,18 @@
 # 0023 — kg watch Event Stream
 
-**AMENDED 2026-08-30 by [0027](0027-delete-index-and-daemon.md).** `kg watch --daemon`
-is gone with the daemon; watching is direct only. Everything else in this ADR — the event
-shapes, `--snapshot`, `--type`, `--debounce`, the NDJSON/TTY split — is unchanged.
+**RETIRED 2026-09-01 by [0031](0031-cli-surface-reduction.md).** `kg watch` and
+`internal/watch/` are deleted, and `github.com/fsnotify/fsnotify` and
+`golang.org/x/term` left with them. The event stream existed to feed a resident process
+a picture of the graph; ADR-0027 removed the resident process, and nothing in kg read
+`internal/watch` afterwards except the command itself. Everything below — the event
+shapes, `--snapshot`, `--type`, `--debounce`, the NDJSON/TTY split — describes code that
+no longer exists.
+
+*(Previously amended 2026-08-30 by [0027](0027-delete-index-and-daemon.md), which removed
+`kg watch --daemon`.)*
 
 
-Status: Decided
+Status: Retired
 
 Date: 2026-02-22
 

@@ -1,15 +1,23 @@
 # Entity Resolution and Deduplication Guide
 
-Finding entities that are the same thing, and merging the ones that are. Three
-commands, and the order matters:
+Finding entities that are the same thing, and merging the ones that are. Two
+commands, a human decision between them, and the order matters:
 
 - **`kg resolve`** — one whole-corpus pass over a complete index, reporting every
   pair that may be one entity. It merges nothing.
-- **`kg dedup`** — cluster one type by similarity and, with `--apply`, merge.
-- **`kg merge`** — fold one named entity into another.
+- **`kg merge`** — fold one named entity into another, through the write
+  boundary.
 
-All three need [embeddings](embedding.md) configured and a sidecar built by
-`kg sync`.
+`kg resolve` needs [embeddings](embedding.md) configured and a sidecar built by
+`kg sync`; `kg merge` needs neither, because by then the decision is made.
+
+**`kg dedup` is gone.** It clustered one type by similarity and, with
+`--apply`, merged — which is resolution and merging fused into one command, with
+nobody looking in between. It reported "no duplicates found" and exited 0 on a
+corpus where it had compared nothing, because a missing sidecar was a warning on
+stderr rather than a refusal; `kg resolve` was built to refuse instead. It also
+merged in a loop outside `pkg/batch`, walking the whole corpus once per
+duplicate. Run `kg resolve`, adjudicate, then `kg merge`.
 
 **`kg apply --on-conflict dedup` is gone.** Resolution used to happen inside the
 write boundary, once per batch, against whatever the vector sidecar held — which
@@ -32,9 +40,9 @@ kg resolve --threshold 0.95 --limit 50 --json
 # Only pairs whose types differ — the ones a per-type dedup can never see
 kg resolve --cross-type
 
-# Cluster and merge within one type (dry-run by default)
-kg dedup concept --threshold 0.85 --fields name,description
-kg dedup concept --threshold 0.85 --fields name --apply
+# Fold one adjudicated pair into one entity
+kg merge concept:game_feel_design concept:game_feel --dry-run
+kg merge concept:game_feel_design concept:game_feel
 ```
 
 ## `kg resolve`
@@ -93,71 +101,8 @@ GDKB corpus, one embedded field, 18 cores:
 | **end to end** | **3.9 s** |
 
 It found 862 pairs at cosine ≥ 0.90 — 464 same-type and 398 cross-type. The
-cross-type ones were never in the reach of a per-type `kg dedup` at all.
-
-## `kg dedup`
-
-Scans entities of a given type and clusters duplicates by vector similarity.
-
-### Usage
-
-```bash
-kg dedup <type> --threshold <0.0-1.0> --fields <field1,field2> [flags]
-```
-
-### Flags
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--threshold` | 0.85 | Similarity threshold (entities above this are considered duplicates) |
-| `--fields` | — | Comma-separated embedding fields to compare (required) |
-| `--apply` | false | Merge duplicates (default is dry-run) |
-| `--prefer-source` | false | Source attributes win on merge conflicts |
-| `--cross-type` | false | Compare across entity types |
-| `--json` | false | JSON output |
-
-### How It Works
-
-1. Loads all entities of the specified type
-2. Reads each entity's vector for that field from the sidecar (`kg sync` builds it)
-3. Computes pairwise cosine similarity across all entity pairs
-4. Groups duplicates into clusters using union-find (transitive: if A≈B and B≈C, all three cluster together)
-5. Picks the canonical entity per cluster (lowest ID lexicographically)
-6. With `--apply`: merges non-canonical entities into the canonical using `kg merge` semantics
-
-### Examples
-
-```bash
-# Dry-run: see what would be merged
-kg dedup concept --threshold 0.85 --fields name,description
-# Output:
-#   concept:game_feel_design → concept:game_feel (0.91, name)
-#   concept:juiciness → concept:game_feel (0.87, description)
-#   2 duplicates found, 1 clusters across 11063 entities
-
-# Apply merges
-kg dedup concept --threshold 0.85 --fields name --apply
-# Output:
-#   concept:game_feel_design → concept:game_feel (0.91, name)
-#   1 duplicates merged into 1 clusters across 11063 entities
-
-# JSON output for pipeline integration
-kg dedup concept --threshold 0.90 --fields name --json
-
-# Cross-type dedup (e.g., find concept/genre duplicates)
-kg dedup concept --threshold 0.85 --fields name --cross-type
-```
-
-### Choosing a Threshold
-
-| Threshold | Behavior |
-|-----------|----------|
-| 0.95+ | Very strict — only near-identical entities |
-| 0.85–0.95 | Good default range — catches most duplicates |
-| 0.75–0.85 | Aggressive — may merge loosely related entities |
-| < 0.75 | Too aggressive for most use cases |
-
-Always run without `--apply` first to review matches.
+cross-type ones were never in the reach of the per-type `kg dedup` that used
+to be here at all.
 
 ## `kg apply --on-conflict dedup` — removed
 
@@ -188,11 +133,26 @@ and adjudicate `pairs.json`, applying the decisions with `kg merge`.
 
 ## Merge Semantics
 
-`kg dedup --apply` uses `kg merge` internally, and it is what you run by hand on
-a pair `kg resolve` reported and a human adjudicated:
+`kg merge` is what you run by hand on a pair `kg resolve` reported and a human
+adjudicated. It is the one merge rule, stated once in `pkg/merge` and used by
+both verbs that combine two claims (ADR-0030):
 
-- Target (canonical) entity attributes are preserved; source attributes fill gaps
-- Outgoing relations are unioned (no duplicates)
-- All incoming links from other entities are rewritten to point to the target
-- Source entity is deleted after merge
-- Use `--prefer-source` to let the incoming entity's attributes win
+- A **scalar** takes the incoming (source) value; overwriting a *different* one
+  is reported as a warning.
+- An attribute the schema declares **`type: list`** keeps both accounts: the two
+  item sets concatenate, deduplicated on (source, text). Two entities being
+  merged genuinely were written by different sources and both are true.
+- **Relations** union, outgoing and incoming alike: every link pointing at the
+  source is rewritten to point at the target.
+- The source entity is deleted last.
+- `--prefer target` keeps the target's scalars instead. It applies to scalars
+  only — a list keeps both sides and a relation unions, so neither has a side to
+  prefer. The default flipped with ADR-0030; it used to be target-wins, which
+  made `kg merge` and `kg apply` give opposite answers to the same question.
+- `--cross-type` allows two ends that disagree about type. Without it the merge
+  is refused, which is what catches an interactive typo.
+
+It goes through `batch.Apply`, so it carries an envelope, an idempotency key and
+a journal: a merge that dies halfway is rolled back rather than leaving half the
+referrers pointing at an entity that no longer exists. `kg apply` reaches the
+same code with an `action: merge` record.

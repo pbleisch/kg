@@ -1,5 +1,12 @@
 # 0030 — What Upsert Does When Two Records Claim One Identity
 
+**AMENDED 2026-09-01 by [0031](0031-cli-surface-reduction.md).** Two callers named below
+are gone. `kg dedup` was deleted, so `command.Merge` is now reached only by `kg merge`
+and the `merge` op — and `kg merge` reaches it *through* `batch.Apply`, so the one merge
+rule this ADR states is also the one write path. `kg import` was deleted, which closes
+the data-loss consequence recorded at the end of this document rather than leaving it
+open.
+
 Status: **PROPOSED — NOT RATIFIED.** The implementation is on `main` because
 increment 5 could not start without it, and choosing an implementation must not
 be allowed to answer a question that belongs to the project. Two of the

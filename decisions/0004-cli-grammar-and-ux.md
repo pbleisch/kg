@@ -1,5 +1,9 @@
 # 0004 - CLI Grammar and UX
 
+**AMENDED 2026-09-01 by [0031](0031-cli-surface-reduction.md).** The morphism grammar is
+gone with `kg morph` (ADR-0005, retired): `kg path` takes `->` and `->*` only, and `@name`
+never resolved to anything. Every other clause below stands.
+
 Status: Proposed
 
 Date: 2026-02-01

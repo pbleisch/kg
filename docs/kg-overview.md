@@ -64,7 +64,6 @@ rebuilds. Delete `.kg/.cache/` and `git status` stays clean.
 ├── schema/
 │   ├── person.yaml
 │   └── project.yaml
-├── morphisms.yaml             # reusable path patterns
 ├── config.yaml                # travels with the graph
 ├── embedder.yaml              # gitignored, per checkout — names the embedding command
 └── .cache/                    # gitignored, derived, rebuilt by `kg sync`
@@ -289,59 +288,6 @@ path[1]: dependsOn*
 results[5]: project:api,project:web,project:mobile,project:sdk,project:cli
 ```
 
-#### `kg morph <name> [= <path>]`
-
-Define or use reusable path patterns (morphisms).
-
-**Define a morphism:**
-
-```bash
-$ kg morph teammates = -> worksOn <- worksOn
-```
-```toon
-created: teammates
-pattern: -> worksOn <- worksOn
-```
-
-**List morphisms:**
-
-```bash
-$ kg morph
-```
-```toon
-morphisms[3]{name,pattern}:
-  teammates,-> worksOn <- worksOn
-  management,->* reportsTo
-  dependencies,<-* dependsOn
-```
-
-**Use a morphism in a path:**
-
-```bash
-$ kg path person:alice @teammates
-```
-```toon
-from: person:alice
-path[1]: @teammates
-expanded: -> worksOn <- worksOn
-results[4]: person:bob,person:charlie,person:dave,person:eve
-```
-
-Morphisms are stored in `.kg/morphisms.yaml` and can be version-controlled.
-
-```yaml
-# .kg/morphisms.yaml
-teammates:
-  pattern: -> worksOn <- worksOn
-  description: People who work on the same projects
-management:
-  pattern: ->* reportsTo
-  description: Full management chain
-dependencies:
-  pattern: <-* dependsOn
-  description: All transitive dependents
-```
-
 #### `kg types`
 
 List all entity types defined in the schema.
@@ -476,22 +422,18 @@ thing is judgement. See [dedup.md](dedup.md).
 $ kg resolve --threshold 0.90 --limit 20
 ```
 
-#### `kg dedup <type>`
+#### `kg sync [entity-id...]`
 
-Find potential duplicates within a type using embedding similarity, and with
-`--apply`, merge them.
-
-```bash
-$ kg dedup person
-```
-
-#### `kg embed [type]`
-
-Generate or regenerate embeddings for entities.
+Rebuild the derived data — the vector sidecar under `.kg/.cache/` that
+`kg similar` and `kg resolve` read. Named ids restrict which entities are
+re-embedded; every other vector is carried through, so the sidecar that lands is
+always complete.
 
 ```bash
-$ kg embed person     # embed all person entities
-$ kg embed            # embed all entities
+$ kg sync                    # bring the sidecar level with the graph
+$ kg sync --init             # scaffold an embedding script and .kg/embedder.yaml
+$ kg sync --show             # what kg resolved as the embedder, and from where
+$ kg sync person:alice       # re-embed one entity, carry the rest
 ```
 
 #### `kg validate`
@@ -637,8 +579,6 @@ Query and manage a local knowledge graph of entities and relationships.
   - Use `<-*` for recursive reverse traversal
 - `kg types` — List all entity types
 - `kg describe <type>` — Show type schema
-- `kg morph` — List reusable path patterns
-- `kg morph <name> = <pattern>` — Define a morphism
 
 ### Mutation Commands (writes)
 - `kg create <type> <id> [attr=val...]` — Create entity
@@ -668,7 +608,6 @@ Default: TOON format (token-efficient). Use `--json` for JSON output.
 - Find highly-paid engineers: `kg find person where role~=Engineer, salary>=100000`
 - Who works on Atlas: `kg back project:atlas via worksOn`
 - Alice's full management chain: `kg path person:alice ->* reportsTo`
-- Alice's teammates: `kg path person:alice @teammates` (using morphism)
 - Detailed traversal: `kg path person:alice -> reportsTo -> worksOn --verbose`
 ```
 
@@ -778,8 +717,7 @@ kg/
 | Dependency | Purpose |
 |------------|---------|
 | `github.com/spf13/cobra` | CLI framework |
-| `github.com/fsnotify/fsnotify` | `kg watch` |
-| `golang.org/x/term` | TTY detection for output format |
+| `github.com/spf13/pflag` | Flag parsing, via cobra |
 | `gopkg.in/yaml.v3` | YAML parsing |
 
 No CGO, no database, no native library. The whole binary is static.
@@ -863,7 +801,7 @@ Questions to resolve:
 - How should labels appear in YAML files?
 - Should labels be queryable via `--label` flags, or a richer syntax?
 - Do we need label hierarchies (`source:hr:employee-db`)?
-- How do labels interact with morphisms and recursive traversal?
+- How do labels interact with recursive traversal?
 
 If you have a use case that needs quads, please document it.
 

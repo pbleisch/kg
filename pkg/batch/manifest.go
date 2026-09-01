@@ -29,16 +29,19 @@ type Manifest struct {
 
 // An Action is a manifest's spelling of a [Record].
 type Action struct {
-	ID         string         `yaml:"id,omitempty" json:"id,omitempty"`
-	Action     string         `yaml:"action" json:"action"`
-	Entity     *store.Entity  `yaml:"entity,omitempty" json:"entity,omitempty"`
-	Target     string         `yaml:"target,omitempty" json:"target,omitempty"`
-	From       string         `yaml:"from,omitempty" json:"from,omitempty"`
-	To         string         `yaml:"to,omitempty" json:"to,omitempty"`
-	Rel        string         `yaml:"rel,omitempty" json:"rel,omitempty"`
-	Prefer     string         `yaml:"prefer,omitempty" json:"prefer,omitempty"`
-	Attributes map[string]any `yaml:"attributes,omitempty" json:"attributes,omitempty"`
-	Unset      []string       `yaml:"unset,omitempty" json:"unset,omitempty"`
+	ID     string        `yaml:"id,omitempty" json:"id,omitempty"`
+	Action string        `yaml:"action" json:"action"`
+	Entity *store.Entity `yaml:"entity,omitempty" json:"entity,omitempty"`
+	Target string        `yaml:"target,omitempty" json:"target,omitempty"`
+	From   string        `yaml:"from,omitempty" json:"from,omitempty"`
+	To     string        `yaml:"to,omitempty" json:"to,omitempty"`
+	Rel    string        `yaml:"rel,omitempty" json:"rel,omitempty"`
+	Prefer string        `yaml:"prefer,omitempty" json:"prefer,omitempty"`
+	// RequireSameType is opt-in: a manifest that omits it merges across types
+	// as it always has.
+	RequireSameType bool           `yaml:"require_same_type,omitempty" json:"require_same_type,omitempty"`
+	Attributes      map[string]any `yaml:"attributes,omitempty" json:"attributes,omitempty"`
+	Unset           []string       `yaml:"unset,omitempty" json:"unset,omitempty"`
 }
 
 // DecodeManifest reads a YAML (or JSON, which is YAML) batch file.
@@ -76,16 +79,17 @@ func DecodeManifest(data []byte) (Envelope, []Record, error) {
 	records := make([]Record, 0, len(m.Actions))
 	for _, a := range m.Actions {
 		records = append(records, Record{
-			ID:         a.ID,
-			Op:         Op(a.Action),
-			Entity:     a.Entity,
-			Target:     a.Target,
-			From:       a.From,
-			Rel:        a.Rel,
-			To:         a.To,
-			Prefer:     a.Prefer,
-			Attributes: a.Attributes,
-			Unset:      a.Unset,
+			ID:              a.ID,
+			Op:              Op(a.Action),
+			Entity:          a.Entity,
+			Target:          a.Target,
+			From:            a.From,
+			Rel:             a.Rel,
+			To:              a.To,
+			Prefer:          a.Prefer,
+			RequireSameType: a.RequireSameType,
+			Attributes:      a.Attributes,
+			Unset:           a.Unset,
 		})
 	}
 	return env, records, nil

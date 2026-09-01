@@ -11,13 +11,13 @@ files (P2).
 
 ```bash
 # 1. Scaffold an embedding script and the file that names it
-kg embed --init
+kg sync --init
 
 # 2. Install its dependencies
 pip install -r .kg/scripts/requirements.txt
 
 # 3. Check what kg resolved, and from where
-kg embed --show
+kg sync --show
 
 # 4. Build the vector sidecar
 kg sync
@@ -95,7 +95,7 @@ to the arguments too. `python .kg/scripts/embed.py` is refused, because it
 resolves against whatever directory kg happens to be run from: `kg sync` from
 one place would embed and from another would not.
 
-`kg embed --show` prints what kg resolved and which source it came from, so
+`kg sync --show` prints what kg resolved and which source it came from, so
 "no vectors" is never a guess.
 
 ## Sync
@@ -120,11 +120,15 @@ kg sync                     # bring the sidecar level with the graph
 kg sync --rebuild           # discard it and re-embed everything
 kg sync --dry-run           # report what would happen
 kg sync --no-embed          # this graph has no vectors, and that is on purpose
-kg embed --show             # what kg resolved, and from where
-kg embed --dry-run          # same, for the embed pass alone
-kg embed --json             # JSON output
-kg embed <id>...            # re-embed named entities only
+kg sync --show              # what kg resolved, and from where
+kg sync --init              # scaffold a script and .kg/embedder.yaml
+kg sync --json              # JSON output
+kg sync <id>...             # re-embed named entities only, carrying the rest
 ```
+
+One verb rebuilds the derived data. `kg embed` was the same library call under
+a second name — neither was a superset of the other — and it is gone; every
+flag it had is above.
 
 ## Migrating a corpus that has vectors in its YAML
 

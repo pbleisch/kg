@@ -5,9 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/pbleisch/kg/pkg/command"
+	"github.com/pbleisch/kg/pkg/batch"
 	"github.com/pbleisch/kg/pkg/output"
-	"github.com/pbleisch/kg/pkg/store"
 	"github.com/spf13/cobra"
 )
 
@@ -24,6 +23,11 @@ because two entities being merged genuinely were written by different sources.
 Outgoing links are unioned. All incoming links pointing at source are rewritten
 to point at target, and the source entity is then deleted.
 
+It goes through the write boundary, so it carries an envelope, an idempotency
+key and a journal: a merge that dies halfway is rolled back rather than leaving
+half the referrers rewritten. It is the same path 'kg apply' takes for an
+'action: merge' record.
+
 --prefer target keeps the target's scalars instead. It applies to scalars only:
 a list keeps both sides and a relation unions, so neither has a side to prefer.
 The default flipped with ADR-0030 — it used to be target-wins, which made
@@ -34,22 +38,10 @@ The default flipped with ADR-0030 — it used to be target-wins, which made
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
 			crossType, _ := cmd.Flags().GetBool("cross-type")
 
-			opts := command.MergeOptions{
-				Prefer:    prefer,
-				DryRun:    dryRun,
-				CrossType: crossType,
-			}
-
-			// A merge rewrites every inbound link to the source, so it needs
-			// the whole graph. Load it here so a failure to read the corpus
-			// surfaces before anything is written.
-			g, err := store.LoadGraph(cfg.kgDir)
-			if err != nil {
-				return fmt.Errorf("loading graph: %w", err)
-			}
-			opts.Graph = g
-
-			result, err := command.Merge(cfg.kgDir, store.NormalizeEntityID(args[0]), store.NormalizeEntityID(args[1]), opts)
+			// Every decision below the argv belongs to the boundary: the
+			// type check, the merge rule, normalizing the two ids. This
+			// command chooses nothing (P7).
+			res, err := batch.MergeEntities(cfg.kgDir, args[0], args[1], prefer, !crossType, dryRun)
 			if err != nil {
 				return err
 			}
@@ -58,16 +50,22 @@ The default flipped with ADR-0030 — it used to be target-wins, which made
 			case output.FormatJSON:
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
-				return enc.Encode(result)
+				return enc.Encode(res)
 			default:
-				if dryRun {
-					fmt.Fprintf(cmd.OutOrStdout(), "[dry-run] merge %s → %s\n", result.SourceID, result.TargetID)
-				} else {
-					fmt.Fprintf(cmd.OutOrStdout(), "merged %s → %s\n", result.SourceID, result.TargetID)
+				w := cmd.OutOrStdout()
+				for _, m := range res.Merges {
+					if dryRun {
+						fmt.Fprintf(w, "[dry-run] merge %s → %s\n", m.SourceID, m.TargetID)
+					} else {
+						fmt.Fprintf(w, "merged %s → %s\n", m.SourceID, m.TargetID)
+					}
+					fmt.Fprintf(w, "  attributes updated: %d\n", m.AttrsUpdated)
+					fmt.Fprintf(w, "  links added:        %d\n", m.LinksAdded)
+					fmt.Fprintf(w, "  incoming rewritten: %d\n", m.IncomingRewritten)
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "  attributes updated: %d\n", result.AttrsUpdated)
-				fmt.Fprintf(cmd.OutOrStdout(), "  links added:        %d\n", result.LinksAdded)
-				fmt.Fprintf(cmd.OutOrStdout(), "  incoming rewritten: %d\n", result.IncomingRewritten)
+				for _, warn := range res.Warnings {
+					fmt.Fprintf(os.Stderr, "  warning: %s\n", warn.Message)
+				}
 				if dryRun {
 					fmt.Fprintln(os.Stderr, "no changes written (dry-run)")
 				}

@@ -100,6 +100,31 @@ func UnsetAttrs(kgDir, id string, names []string) (*store.Entity, error) {
 	return store.ReadEntity(kgDir, target)
 }
 
+// MergeEntities folds one identity into another through the write boundary.
+//
+// `kg merge` used to call command.Merge directly: it rewrote every referrer,
+// wrote the target and deleted the source with no envelope, no ledger and no
+// journal, so a merge that died halfway left the graph half-rewritten. It is
+// the last verb that wrote outside pkg/batch. Same argv, same rule, one write
+// path.
+//
+// requireSameType refuses two ends that disagree about type, which is what
+// `kg merge` wants and a manifest, having already adjudicated, does not.
+func MergeEntities(kgDir, sourceID, targetID, prefer string, requireSameType, dryRun bool) (*Result, error) {
+	rec := Record{
+		Op:              OpMerge,
+		From:            store.NormalizeEntityID(sourceID),
+		Target:          store.NormalizeEntityID(targetID),
+		Prefer:          prefer,
+		RequireSameType: requireSameType,
+	}
+	env, err := NewEnvelope(Version, newKey(string(OpMerge)))
+	if err != nil {
+		return nil, err
+	}
+	return Apply(kgDir, env, []Record{rec}, Options{DryRun: dryRun})
+}
+
 // DeleteRef removes one entity through the write boundary.
 func DeleteRef(kgDir, id string) error {
 	_, err := singleton(kgDir, Record{Op: OpDelete, Target: id}, Options{})

@@ -71,6 +71,7 @@ mage install        # installs kg to $GOPATH/bin
 | `kg find <type> [filters...]` | Find entities by type (`--limit`, `--offset`, `--include-embeddings`, `--include-relations`) |
 | `kg similar <type> --field <f> --vector\|--like\|--vector-file` | Find similar entities by vector (strips embeddings; `--include-embeddings` to keep) |
 | `kg set <type:id> key=value` | Set attributes |
+| `kg unset <type:id> <attr...>` | Remove attributes, including an item no contributor will replace |
 | `kg delete <type:id>` | Delete an entity |
 | `kg link <from> <rel> <to>` | Create a relation |
 | `kg unlink <from> <rel> <to>` | Remove a relation |
@@ -78,16 +79,13 @@ mage install        # installs kg to $GOPATH/bin
 | `kg back <id>` | Find reverse references (strips embeddings; `--include-embeddings` to keep) |
 | `kg types` | List schema types |
 | `kg describe <type>` | Show type schema |
-| `kg merge <source> <target>` | Merge two entities |
+| `kg apply <manifest>` | The write boundary: a batch of typed records under one idempotency key |
+| `kg merge <source> <target>` | Merge two entities, through that same boundary |
 | `kg resolve` | Report every pair in the corpus that may be one entity (merges nothing) |
-| `kg dedup <type> --threshold --fields` | Find/merge duplicate entities of one type by similarity |
 | `kg stats` | Graph metrics |
 | `kg validate` | Check the graph: structure fails, content warns |
 | `kg validate --fix` | Repair `id:`/`type:` to agree with the path, drop illegal attribute names |
-| `kg sync` | Rebuild derived data (the vector sidecar) |
-| `kg embed` | Generate embeddings (`--init`, `--show`, `--rebuild`, `--dry-run`) |
-| `kg watch` | Stream entity/relation change events |
-| `kg morph` | Define and use reusable path patterns |
+| `kg sync [entity-id...]` | Rebuild derived data — the vector sidecar (`--init`, `--show`, `--rebuild`, `--dry-run`, `--no-embed`) |
 | `kg mcp serve` | Start MCP server (stdio) |
 | `kg agent status\|schema\|skill\|examples\|mcp-config\|check` | Agent integration tools |
 
@@ -108,20 +106,6 @@ fewer tokens than JSON, ideal for AI agents. Alternatives:
 kg get person:alice --json    # JSON
 kg get person:alice --human   # Human-readable
 ```
-
-## Watching for Changes
-
-`kg watch` streams entity and relation change events as NDJSON:
-
-```bash
-kg watch                             # human-readable (TTY) or NDJSON (piped)
-kg watch --json                      # force NDJSON output
-kg watch --json --snapshot           # emit all entities first, then stream
-kg watch --json --type game,mechanic # filter by entity type
-kg watch --json --debounce 100ms     # coalesce rapid changes
-```
-
-Events: `init`, `created`, `updated`, `deleted`, `linked`, `unlinked`.
 
 ## Storage Model
 
@@ -183,9 +167,9 @@ configure, and searches them with `kg similar`. kg never chooses, hosts or calls
 a model itself.
 
 ```bash
-kg embed --init                          # scaffold a script and .kg/embedder.yaml
+kg sync --init                           # scaffold a script and .kg/embedder.yaml
 pip install -r .kg/scripts/requirements.txt
-kg embed --show                          # what kg resolved, and from where
+kg sync --show                           # what kg resolved, and from where
 kg sync                                  # build the vector sidecar
 kg similar person --field name --like person:alice
 ```

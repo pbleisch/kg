@@ -86,6 +86,9 @@ the write boundary, with a warning. `kg similar` scans the sidecar by brute forc
 The embedding command is **operator configuration, not graph content**: `KG_EMBED_COMMAND`
 or the gitignored `.kg/embedder.yaml`, absolute paths only, and kg refuses an
 `embedding:` block in `.kg/config.yaml` with the migration in the error text (ADR-0025).
+`kg sync` is the one verb that rebuilds it — `--init` scaffolds an embedder, `--show`
+says which one resolved, and named entity ids restrict what is re-embedded. `kg embed`
+was the same call under a second name and is gone (ADR-0031).
 
 [ADR-0026](decisions/0026-read-budget-and-scale-ceiling.md) states the read budget and
 the scale ceiling and is **deliberately unratified** — PRINCIPLES.md open questions 1
@@ -97,7 +100,7 @@ and 2 are Paul's. Cite it for the numbers; do not treat it as settled.
 [`Envelope`](pkg/batch/envelope.go) — version, idempotency key and contributor,
 buildable only through `NewEnvelope` / `NewEnvelopeFrom` — and typed records.
 `kg apply`, the write commands (`create`, `set`, `unset`, `link`, `unlink`,
-`delete`) and the MCP write tools are producers that enter through it; none
+`delete`, `merge`) and the MCP write tools are producers that enter through it; none
 holds validation, defaulting or normalization of its own (P7).
 
 Structure is refused, content is warned (P3): illegal attribute names, a type
@@ -153,6 +156,33 @@ Never read an attribute value with `fmt.Sprintf("%v", …)`. Use
 `store.AttrText` (one string) or `store.AttrTexts` (one per item): `%v` renders
 a multi-valued field as `[map[source:… text:…]]`, and that is the string every
 vector would be built from.
+
+## The CLI surface, and both halves of P7
+
+[ADR-0031](decisions/0031-cli-surface-reduction.md) deleted `import`, `morph`, `dedup`,
+`watch` and `embed` (2026-09-01) and says why each one had to go. Before proposing
+another deletion, read P7's **count** clause: *"the command count is a choice; the CLI's
+coverage of the library is not"*. A thin wrapper over one library call is P7 working, not
+P7 violated — `get`, `find`, `back`, `path`, `stats`, `describe` and everything under
+`kg agent` are the coverage half and are not candidates. What convicts a command is
+holding validation, defaulting or normalization the library lacks, writing outside
+`pkg/batch`, or being a second name for a call another verb makes.
+
+The same principle runs the other way, and that direction is the one PRINCIPLES.md says
+is likeliest to be lost: **a command must not hold behaviour no library call exposes.**
+Scaffolding is a library call — `store.Init` and `store.ScaffoldEmbedder` — because
+`kg init` and `kg embed --init` used to hold all of it in `cmd/`, so a Go consumer could
+read and write a graph but not create one.
+
+Every deleted verb has a test asserting it stays deleted
+(`TestRemovedCommandsAreGone`, the `TestDaemonCommandIsGone` shape), and
+`TestGeneratedSkillNamesOnlyRealCommands` fails if the generated `SKILL.md` names a
+command kg does not have. **The agent surface must report what the human surface
+reports:** `kg agent check` and `kg agent status` once said `healthy: true` and
+`entity_count: 0` on a corpus `kg validate` refuses with exit code 2, because both
+dropped a `*store.LoadError` and read the empty list as an empty graph. `check` calls
+`query.Validate` now. Never branch on `err == nil` after a read; branch on
+`store.LoadRefused`.
 
 ## Landing the Plane (Session Completion)
 

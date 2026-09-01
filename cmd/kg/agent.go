@@ -11,6 +11,7 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/pbleisch/kg/pkg/query"
 	"github.com/pbleisch/kg/pkg/schema"
 	"github.com/pbleisch/kg/pkg/store"
 	"github.com/pbleisch/kg/pkg/vector"
@@ -49,11 +50,22 @@ func agentStatusCmd() *cobra.Command {
 				return err
 			}
 
-			status := agentStatus{Dir: absDir}
+			status := agentStatus{Dir: absDir, Graph: "loads"}
 
-			// Entity counts by type.
+			// Entity counts by type. A read that refuses is a refusal and
+			// never a miss (ADR-0028): the count that follows a swallowed
+			// LoadError is zero, and zero entities is what an empty graph
+			// looks like. Say "refused" and carry the error out so this
+			// exits 2, the way every other read of a refused corpus does.
+			var refusal error
 			entities, err := store.ListEntities(cfg.kgDir)
-			if err == nil {
+			switch errs, refused := store.LoadRefused(err); {
+			case refused:
+				status.Graph = fmt.Sprintf("refused: %d structural error(s)", len(errs))
+				refusal = err
+			case err != nil:
+				return err
+			default:
 				counts := map[string]int{}
 				for _, e := range entities {
 					counts[e.Type]++
@@ -79,13 +91,22 @@ func agentStatusCmd() *cobra.Command {
 			status.Vectors = vectorStatus(cfg.kgDir)
 			status.Embedder = embedderStatus(cfg.kgDir)
 
-			return writeOutput(cmd.OutOrStdout(), status)
+			if err := writeOutput(cmd.OutOrStdout(), status); err != nil {
+				return err
+			}
+			// Written first, so an agent orienting on a broken graph still
+			// gets the dir and the schema types it needs to repair it.
+			return refusal
 		},
 	}
 }
 
 type agentStatus struct {
-	Dir            string         `json:"dir"`
+	Dir string `json:"dir"`
+	// Graph says whether the corpus loads. A refused corpus reports
+	// "refused: N structural error(s)" and the counts below are absent, not
+	// zero.
+	Graph          string         `json:"graph"`
 	EntityCount    int            `json:"entity_count"`
 	EntitiesByType map[string]int `json:"entities_by_type,omitempty"`
 	SchemaTypes    []string       `json:"schema_types,omitempty"`
@@ -98,6 +119,7 @@ type agentStatus struct {
 
 func (s agentStatus) toTOON(w io.Writer) {
 	fmt.Fprintf(w, "dir: %s\n", s.Dir)
+	fmt.Fprintf(w, "graph: %s\n", s.Graph)
 	fmt.Fprintf(w, "entity_count: %d\n", s.EntityCount)
 	if len(s.EntitiesByType) > 0 {
 		types := make([]string, 0, len(s.EntitiesByType))
@@ -594,6 +616,7 @@ func agentCheckCmd() *cobra.Command {
 		Short: "Health check for the knowledge graph",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w := cmd.OutOrStdout()
+			var result checkResult
 			var problems []string
 
 			// Check kg dir exists.
@@ -613,31 +636,42 @@ func agentCheckCmd() *cobra.Command {
 				problems = append(problems, "vectors: "+v+" (run 'kg sync')")
 			}
 
-			// Validation errors.
-			schemas, schemaErr := schema.LoadAllSchemas(cfg.kgDir)
-			entities, entityErr := store.ListEntities(cfg.kgDir)
-			if schemaErr == nil && entityErr == nil {
-				for _, e := range entities {
-					s, ok := schemas[e.Type]
-					if !ok {
-						continue
-					}
-					errs := schema.ValidateEntity(s, e)
-					for _, ve := range errs {
-						problems = append(problems, fmt.Sprintf("validation: %s: %s: %s", e.ID, ve.Field, ve.Message))
-					}
+			// Both halves of P3, from the one place that states them.
+			// Hand-rolling schema.ValidateEntity here is how this command
+			// came to answer "healthy: true" on a corpus kg refuses: it
+			// walked with a read that refuses, dropped the refusal, and
+			// validated the empty list that came back. query.Validate is
+			// the same call `kg validate` makes, so the two surfaces cannot
+			// disagree again (P7 thinness).
+			rep, err := query.Validate(cfg.kgDir)
+			if err != nil {
+				return err
+			}
+			var advisories []string
+			if rep != nil {
+				result.Files, result.Entities = rep.Files, rep.Entities
+				for _, st := range rep.Structural {
+					problems = append(problems, fmt.Sprintf("%s: %s", st.Code, st.Error()))
+				}
+				for _, a := range rep.Advisories {
+					advisories = append(advisories, fmt.Sprintf("%s: %s", a.Code, a.String()))
 				}
 			}
 
-			result := checkResult{
-				Healthy:  len(problems) == 0,
-				Problems: problems,
-			}
+			result.Healthy = len(problems) == 0
+			result.Problems = problems
+			result.Advisories = advisories
 
 			if err := writeOutput(w, result); err != nil {
 				return err
 			}
 
+			// A corpus that will not load exits 2 with the library's own
+			// error, exactly as `kg validate`, `kg find` and `kg stats` do.
+			// Advisories are the advised half and never refuse (ADR-0028).
+			if rep != nil && !rep.OK() {
+				return &store.LoadError{Errors: rep.Structural}
+			}
 			if !result.Healthy {
 				return fmt.Errorf("health check failed: %d problem(s)", len(problems))
 			}
@@ -646,17 +680,31 @@ func agentCheckCmd() *cobra.Command {
 	}
 }
 
+// A checkResult keeps P3's two halves apart, because they are two rules with
+// two severities and must not share a field: Problems refuse the graph,
+// Advisories are reported and refuse nothing.
 type checkResult struct {
-	Healthy  bool     `json:"healthy"`
-	Problems []string `json:"problems,omitempty"`
+	Healthy    bool     `json:"healthy"`
+	Files      int      `json:"files"`
+	Entities   int      `json:"entities"`
+	Problems   []string `json:"problems,omitempty"`
+	Advisories []string `json:"advisories,omitempty"`
 }
 
 func (r checkResult) toTOON(w io.Writer) {
 	fmt.Fprintf(w, "healthy: %v\n", r.Healthy)
+	fmt.Fprintf(w, "files: %d\n", r.Files)
+	fmt.Fprintf(w, "entities: %d\n", r.Entities)
 	if len(r.Problems) > 0 {
 		fmt.Fprintf(w, "problems[%d]:\n", len(r.Problems))
 		for _, p := range r.Problems {
 			fmt.Fprintf(w, "  %s\n", p)
+		}
+	}
+	if len(r.Advisories) > 0 {
+		fmt.Fprintf(w, "advisories[%d]:\n", len(r.Advisories))
+		for _, a := range r.Advisories {
+			fmt.Fprintf(w, "  %s\n", a)
 		}
 	}
 }

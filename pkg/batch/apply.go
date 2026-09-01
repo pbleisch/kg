@@ -29,6 +29,43 @@ type Result struct {
 	Skipped        int            `json:"skipped"`
 	Errors         []RecordError  `json:"errors,omitempty"`
 	Warnings       []Warning      `json:"warnings,omitempty"`
+	// Merges details each merge record: which identity folded into which and
+	// how much moved. A count of one says a merge happened; this says what it
+	// did, which is what `kg merge` prints and what a manifest merge used to
+	// report as nothing at all.
+	Merges []MergeDetail `json:"merges,omitempty"`
+}
+
+// A MergeDetail is what one merge record moved.
+type MergeDetail struct {
+	SourceID          string `json:"source_id"`
+	TargetID          string `json:"target_id"`
+	AttrsUpdated      int    `json:"attrs_updated"`
+	LinksAdded        int    `json:"links_added"`
+	IncomingRewritten int    `json:"incoming_rewritten"`
+}
+
+// mergeOptions states, in one place, how a record becomes a merge. Both the
+// dry-run preview and the real apply build their options here so the two
+// cannot drift.
+func mergeOptions(r Record, graph *store.Graph, kinds *schema.Kinds, dryRun bool) command.MergeOptions {
+	return command.MergeOptions{
+		Prefer:    r.Prefer,
+		CrossType: !r.RequireSameType,
+		Graph:     graph,
+		Kinds:     kinds,
+		DryRun:    dryRun,
+	}
+}
+
+func detailOf(mr *command.MergeResult) MergeDetail {
+	return MergeDetail{
+		SourceID:          mr.SourceID,
+		TargetID:          mr.TargetID,
+		AttrsUpdated:      mr.AttrsUpdated,
+		LinksAdded:        mr.LinksAdded,
+		IncomingRewritten: mr.IncomingRewritten,
+	}
 }
 
 // Apply is kg's write boundary.  Every write in this repository comes through
@@ -83,6 +120,31 @@ func Apply(kgDir string, env Envelope, records []Record, opts Options) (*Result,
 	}
 
 	if opts.DryRun {
+		// A dry-run still says what each merge would move. It writes nothing
+		// — command.Merge under DryRun returns before every write — but it
+		// does read the graph, because "what would this rewrite" cannot be
+		// answered without knowing who points at the source. Each preview is
+		// measured against the corpus as it stands, so two merges in one
+		// batch that feed each other are each reported against the state
+		// before either ran.
+		if hasMerge(recs) {
+			graph, err := store.LoadGraph(kgDir)
+			if err != nil {
+				return nil, fmt.Errorf("a merge needs the whole graph: %w", err)
+			}
+			kinds := schema.NewKinds(kgDir)
+			for _, r := range recs {
+				if r.Op != OpMerge {
+					continue
+				}
+				mr, err := command.Merge(kgDir, r.From, r.Target, mergeOptions(r, graph, kinds, true))
+				if err != nil {
+					return nil, fmt.Errorf("record %s: %w", r.label(), err)
+				}
+				res.Merges = append(res.Merges, detailOf(mr))
+				res.Warnings = append(res.Warnings, translate(r, mr.Warnings)...)
+			}
+		}
 		return res, nil
 	}
 
@@ -181,14 +243,10 @@ func Apply(kgDir string, env Envelope, records []Record, opts Options) (*Result,
 			}
 		case OpMerge:
 			var mr *command.MergeResult
-			mr, err = command.Merge(kgDir, r.From, r.Target, command.MergeOptions{
-				Prefer:    r.Prefer,
-				CrossType: true,
-				Graph:     graph,
-				Kinds:     kinds,
-			})
+			mr, err = command.Merge(kgDir, r.From, r.Target, mergeOptions(r, graph, kinds, false))
 			if err == nil {
 				res.Warnings = append(res.Warnings, translate(r, mr.Warnings)...)
+				res.Merges = append(res.Merges, detailOf(mr))
 				res.Updated++
 			}
 		}

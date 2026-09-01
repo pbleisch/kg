@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -369,12 +370,12 @@ func TestFullWorkflow(t *testing.T) {
 	}
 }
 
-func TestEmbedInit(t *testing.T) {
+func TestSyncInit(t *testing.T) {
 	dir := initKG(t)
 
-	out, err := runCmd(t, "embed", "--init", "--dir="+dir)
+	out, err := runCmd(t, "sync", "--init", "--dir="+dir)
 	if err != nil {
-		t.Fatalf("embed --init: %v", err)
+		t.Fatalf("sync --init: %v", err)
 	}
 	if !strings.Contains(out, "Embedding setup scaffolded") {
 		t.Errorf("expected scaffolded message, got: %q", out)
@@ -448,15 +449,15 @@ func TestEmbedInit(t *testing.T) {
 	}
 
 	// Running --init again should fail (script already exists).
-	_, err = runCmd(t, "embed", "--init", "--dir="+dir)
+	_, err = runCmd(t, "sync", "--init", "--dir="+dir)
 	if err == nil {
-		t.Fatal("expected error on second embed --init")
+		t.Fatal("expected error on second sync --init")
 	}
 }
 
-func TestEmbedInitScriptSyntax(t *testing.T) {
+func TestSyncInitScriptSyntax(t *testing.T) {
 	dir := initKG(t)
-	runCmd(t, "embed", "--init", "--dir="+dir)
+	runCmd(t, "sync", "--init", "--dir="+dir)
 
 	scriptPath := filepath.Join(dir, "scripts", "embed.py")
 
@@ -747,5 +748,164 @@ func TestResolveRefusesAnIncompleteIndex(t *testing.T) {
 	out, err := runCmd(t, "resolve", "--dir="+dir)
 	if err == nil {
 		t.Fatalf("kg resolve answered with no sidecar at all: %q", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The verbs that went, and the surfaces that must not name them again
+// ---------------------------------------------------------------------------
+
+// Each of these was deleted for a reason recorded in the commit that removed
+// it, and each is the kind of thing a later change re-adds by accident. This
+// is the TestDaemonCommandIsGone shape, one case per verb.
+func TestRemovedCommandsAreGone(t *testing.T) {
+	dir := initKG(t)
+	for _, tc := range []struct {
+		name string
+		args []string
+		why  string
+	}{
+		{"import", []string{"import", "/dev/null"},
+			"destroyed relations absent from the file and never entered batch.Apply; `kg apply` with an upsert action replaces it"},
+		{"morph", []string{"morph", "--", "friends", "=", "->", "knows"},
+			"defined patterns `kg path` could never execute"},
+		{"dedup", []string{"dedup", "person", "--fields", "name"},
+			"answered from a partial index where `kg resolve` refuses"},
+		{"watch", []string{"watch", "--json"},
+			"daemon-era (ADR-0023); internal/watch went with it"},
+		{"embed", []string{"embed"},
+			"folded into `kg sync`, which is the name gdkb and the docs use"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append(append([]string{}, tc.args...), "--dir="+dir)
+			if _, err := runCmd(t, args...); err == nil {
+				t.Errorf("kg %s still exists; it was removed because it %s", tc.name, tc.why)
+			}
+		})
+	}
+}
+
+// The generated SKILL.md is a contract handed to an agent. A command named in
+// it that kg does not have is an instruction to run something that fails.
+func TestGeneratedSkillNamesOnlyRealCommands(t *testing.T) {
+	dir := initKG(t)
+	out, err := runCmd(t, "agent", "skill", "--dir="+dir)
+	if err != nil {
+		t.Fatalf("agent skill: %v", err)
+	}
+	have := map[string]bool{}
+	for _, c := range rootCmd.Commands() {
+		have[c.Name()] = true
+	}
+	// Only the fenced blocks: the prose says things like "kg has one merge
+	// rule", and a verb is what an agent is told to run, not what a sentence
+	// happens to start with.
+	inFence := false
+	verb := regexp.MustCompile(`^\s*(?:\$ )?kg ([a-z][a-z-]*)`)
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			inFence = !inFence
+			continue
+		}
+		if !inFence {
+			continue
+		}
+		if m := verb.FindStringSubmatch(line); m != nil && !have[m[1]] {
+			t.Errorf("SKILL.md names `kg %s`, which no longer exists", m[1])
+		}
+	}
+	for _, gone := range []string{"import", "morph", "dedup", "watch", "embed"} {
+		if strings.Contains(out, "kg "+gone) {
+			t.Errorf("SKILL.md still names the removed `kg %s`", gone)
+		}
+	}
+}
+
+// `kg sync` absorbed `kg embed`, and gdkb calls it in three places with no
+// flags. Those call sites must keep working verbatim.
+func TestSyncCoversWhatEmbedDid(t *testing.T) {
+	dir := initKG(t)
+	for _, args := range [][]string{
+		{"sync", "--show"},     // was `embed --show`
+		{"sync", "--no-embed"}, // gdkb's shape, no embedder configured
+		{"sync", "--dry-run", "--no-embed"},
+		{"sync", "person:alice", "--no-embed"}, // was `embed <entity-id>`
+	} {
+		full := append(append([]string{}, args...), "--dir="+dir)
+		if _, err := runCmd(t, full...); err != nil {
+			t.Errorf("kg %v: %v", args, err)
+		}
+	}
+}
+
+// A merge is a write, and every write carries an envelope, a key and a
+// journal. `kg merge` used to be the one that did not.
+func TestMergeGoesThroughTheWriteBoundary(t *testing.T) {
+	dir := initKG(t)
+	for _, a := range [][]string{
+		{"create", "person", "al", "name=Al"},
+		{"create", "person", "alice", "name=Alice"},
+		{"create", "person", "carol", "name=Carol"},
+	} {
+		if _, err := runCmd(t, append(a, "--dir="+dir)...); err != nil {
+			t.Fatalf("setup %v: %v", a, err)
+		}
+	}
+	if _, err := runCmd(t, "link", "person:carol", "knows", "person:al", "--dir="+dir); err != nil {
+		t.Fatalf("link: %v", err)
+	}
+	if _, err := runCmd(t, "merge", "person:al", "person:alice", "--dir="+dir); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+
+	// The ledger is the evidence: a merge that did not enter batch.Apply
+	// leaves no entry behind.
+	entries, err := os.ReadDir(filepath.Join(dir, ".cache", "apply"))
+	if err != nil {
+		t.Fatalf("reading ledger: %v", err)
+	}
+	found := false
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "merge:") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("kg merge wrote no ledger entry; it is not going through the write boundary")
+	}
+
+	// The inbound link was rewritten and the source is gone.
+	if _, err := runCmd(t, "get", "person:al", "--dir="+dir); err == nil {
+		t.Error("source entity survived the merge")
+	}
+	carol, err := os.ReadFile(filepath.Join(dir, "entities", "person", "carol.yaml"))
+	if err != nil {
+		t.Fatalf("reading carol: %v", err)
+	}
+	if !strings.Contains(string(carol), "person:alice") {
+		t.Errorf("inbound link not rewritten to the target: %s", carol)
+	}
+	if strings.Contains(string(carol), "person:al\n") {
+		t.Errorf("inbound link still points at the merged-away source: %s", carol)
+	}
+}
+
+// --cross-type still guards an interactive typo, and the guard now lives at
+// the boundary rather than in cmd/.
+func TestMergeRefusesCrossTypeWithoutTheFlag(t *testing.T) {
+	dir := initKG(t)
+	for _, a := range [][]string{
+		{"create", "person", "carol", "name=Carol"},
+		{"create", "org", "acme", "name=Acme"},
+	} {
+		if _, err := runCmd(t, append(a, "--dir="+dir)...); err != nil {
+			t.Fatalf("setup %v: %v", a, err)
+		}
+	}
+	if _, err := runCmd(t, "merge", "person:carol", "org:acme", "--dir="+dir); err == nil {
+		t.Error("merged across types without --cross-type")
+	}
+	if _, err := runCmd(t, "merge", "person:carol", "org:acme", "--cross-type", "--dir="+dir); err != nil {
+		t.Errorf("--cross-type did not allow the merge: %v", err)
 	}
 }

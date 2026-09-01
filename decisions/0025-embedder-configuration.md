@@ -1,5 +1,11 @@
 # 0025 — Where the Embedding Command Is Configured
 
+**AMENDED 2026-09-01 by [0031](0031-cli-surface-reduction.md).** The scaffolding and
+inspection verbs are now `kg sync --init` and `kg sync --show`; `kg embed` was folded
+into `kg sync`. The scaffolding body moved to `store.ScaffoldEmbedder`, so a Go consumer
+can write `embedder.yaml` too. Nothing about *where* the embedder may be configured, or
+the absolute-path rule, changed.
+
 Status: Decided
 
 Date: 2026-08-30
@@ -58,7 +64,7 @@ first hit winning:
    option 3: a pipeline in the code repository exports it and points kg at its
    own virtualenv, writing nothing into the data repository.
 2. `<kgDir>/embedder.yaml` — option 2. Gitignored, written per checkout,
-   holding absolute paths. `kg embed --init` scaffolds it and adds both it and
+   holding absolute paths. `kg sync --init` scaffolds it and adds both it and
    `.cache/` to the graph's `.gitignore`.
 
 **A working-directory-relative command is refused, not resolved.** Not the
@@ -90,7 +96,7 @@ Consequences
 - **Positive:** The data repository stops carrying a machine-specific path, so
   two people cloning the same corpus no longer overwrite each other's config to
   make it run.
-- **Positive:** kg can say where its embedder came from. `kg embed --show`
+- **Positive:** kg can say where its embedder came from. `kg sync --show`
   prints the source, the command, the fields and the digest, so "no vectors" is
   distinguishable from "nobody configured an embedder" without guessing.
 - **Negative:** Every existing corpus must migrate. It is one file to write and

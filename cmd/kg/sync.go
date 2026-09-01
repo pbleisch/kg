@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/pbleisch/kg/pkg/output"
 	"github.com/pbleisch/kg/pkg/store"
@@ -13,7 +14,7 @@ import (
 
 func init() {
 	cmd := &cobra.Command{
-		Use:   "sync",
+		Use:   "sync [entity-id...]",
 		Short: "Rebuild the graph's derived data",
 		Long: `Rebuild every derived artifact from the entity files.
 
@@ -24,20 +25,33 @@ read requires this command. What it builds is the vector sidecar under
 Delete .kg/.cache/ and run this: 'git status' is clean afterwards, because
 everything it writes is derived (P2).
 
-A corpus written before vectors moved out carries them as *_embedding
-attributes. --migrate-vectors harvests those into the sidecar and rewrites the
-files without them, so the search keeps working with no model run.
+Named entity ids restrict which entities may be re-embedded; every other vector
+is carried through, so the sidecar that lands is always complete.
 
 Embedding needs a command, and kg does not choose one (P8). Set
-KG_EMBED_COMMAND, or write .kg/embedder.yaml — 'kg embed --init' scaffolds one.
-A graph with no embedder has no derived data; say so with --no-embed rather
-than letting the absence pass unremarked.`,
+KG_EMBED_COMMAND, or write .kg/embedder.yaml — --init scaffolds both a working
+Python script and the file that names it, and --show prints what was resolved
+and where from. A graph with no embedder has no derived data; say so with
+--no-embed rather than letting the absence pass unremarked.
+
+A corpus written before vectors moved out carries them as *_embedding
+attributes. --migrate-vectors harvests those into the sidecar and rewrites the
+files without them, so the search keeps working with no model run.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			initFlag, _ := cmd.Flags().GetBool("init")
+			showFlag, _ := cmd.Flags().GetBool("show")
 			rebuild, _ := cmd.Flags().GetBool("rebuild")
 			noEmbed, _ := cmd.Flags().GetBool("no-embed")
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
 			migrate, _ := cmd.Flags().GetBool("migrate-vectors")
 			strip, _ := cmd.Flags().GetBool("strip-embeddings")
+
+			if initFlag {
+				return runSyncInit(cmd)
+			}
+			if showFlag {
+				return runSyncShow(cmd)
+			}
 			if migrate && strip {
 				return fmt.Errorf("--migrate-vectors and --strip-embeddings are alternatives: the first keeps the vectors, the second discards them")
 			}
@@ -52,6 +66,7 @@ than letting the absence pass unremarked.`,
 				Rebuild: rebuild,
 				NoEmbed: noEmbed,
 				DryRun:  dryRun,
+				Only:    args,
 			})
 			if err != nil {
 				var missing *store.ErrNoEmbedder
@@ -90,12 +105,75 @@ than letting the absence pass unremarked.`,
 			return nil
 		},
 	}
+	cmd.Flags().Bool("init", false, "scaffold an embedding script and .kg/embedder.yaml")
+	cmd.Flags().Bool("show", false, "print the resolved embedding command and its source")
 	cmd.Flags().Bool("rebuild", false, "discard the sidecar and re-embed every field")
 	cmd.Flags().Bool("no-embed", false, "skip embedding; the graph has no derived data to build")
 	cmd.Flags().Bool("dry-run", false, "report what would be done without writing")
 	cmd.Flags().Bool("migrate-vectors", false, "move *_embedding attributes out of the entity files into the sidecar (one-way)")
 	cmd.Flags().Bool("strip-embeddings", false, "delete *_embedding attributes from the entity files without keeping the vectors")
 	rootCmd.AddCommand(cmd)
+}
+
+// runSyncShow prints what kg resolved and where from. An operator who finds no
+// vectors should never have to guess whether a command was configured.
+func runSyncShow(cmd *cobra.Command) error {
+	emb, err := store.ResolveEmbedder(cfg.kgDir)
+	w := cmd.OutOrStdout()
+	if err != nil {
+		if cfg.format == output.FormatJSON {
+			enc := json.NewEncoder(w)
+			enc.SetIndent("", "  ")
+			return enc.Encode(map[string]any{"configured": false, "error": err.Error()})
+		}
+		fmt.Fprintln(w, "no embedder resolved:")
+		fmt.Fprintf(w, "  %v\n", err)
+		return nil
+	}
+	if cfg.format == output.FormatJSON {
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		return enc.Encode(map[string]any{
+			"configured": true,
+			"source":     emb.Source,
+			"command":    emb.Command,
+			"fields":     emb.Fields,
+			"batch":      emb.Batch,
+			"digest":     emb.Digest(),
+		})
+	}
+	fmt.Fprintf(w, "source:  %s\n", emb.Source)
+	fmt.Fprintf(w, "command: %s\n", emb.Command)
+	fmt.Fprintf(w, "fields:  %s\n", strings.Join(emb.Fields, ","))
+	fmt.Fprintf(w, "batch:   %v\n", emb.Batch)
+	fmt.Fprintf(w, "digest:  %s\n", emb.Digest())
+	return nil
+}
+
+// runSyncInit is a cover over store.ScaffoldEmbedder: it prints what the
+// library wrote and what to do next, and decides nothing itself (P7).
+func runSyncInit(cmd *cobra.Command) error {
+	res, err := store.ScaffoldEmbedder(cfg.kgDir)
+	if err != nil {
+		return err
+	}
+	w := cmd.OutOrStdout()
+	if cfg.format == output.FormatJSON {
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		return enc.Encode(res)
+	}
+	fmt.Fprintln(w, "Embedding setup scaffolded:")
+	fmt.Fprintf(w, "  script:       %s\n", res.ScriptPath)
+	fmt.Fprintf(w, "  requirements: %s\n", res.RequirementsPath)
+	fmt.Fprintf(w, "  embedder:     %s\n", res.EmbedderPath)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Next steps:")
+	fmt.Fprintf(w, "  1. pip install -r %s\n", res.RequirementsPath)
+	fmt.Fprintf(w, "  2. Edit %s to set your fields\n", res.EmbedderPath)
+	fmt.Fprintln(w, "  3. kg sync")
+	fmt.Fprintln(w, "  4. kg similar <type> --field <name> --like <entity>")
+	return nil
 }
 
 // runStripEmbeddings is the migration off the arrangement where vectors lived

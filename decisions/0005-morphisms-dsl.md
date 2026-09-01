@@ -1,6 +1,15 @@
 # 0005 - Morphisms DSL
 
-Status: Proposed
+**RETIRED 2026-09-01 by [0031](0031-cli-surface-reduction.md).** `kg morph` and
+`pkg/query/morphism.go` are deleted. The DSL was unusable by construction: `kg path`
+accepted only `->` and `->*`, so `query.ExpandMorphism` had no caller outside its own
+test and a morphism, once defined, could never be applied. The documented syntax did not
+parse either — cobra ate the arrow as a shorthand flag, so defining one needed an
+undocumented `--`. `docs/PRINCIPLES.md` recorded it as serving no principle. Everything
+below describes code that no longer exists; kept because P9 says a decision that was
+wrong is still a record.
+
+Status: Retired
 
 Date: 2026-02-01
 

@@ -32,7 +32,7 @@ type EmbedderFile struct {
 const EmbedderName = "embedder.yaml"
 
 // Embedder is a resolved embedding command, with the place it came from so
-// `kg embed --show` can say which of several possible sources won.
+// `kg sync --show` can say which of several possible sources won.
 type Embedder struct {
 	Command string
 	Fields  []string
@@ -87,7 +87,7 @@ func EmbedderPath(kgDir string) string { return filepath.Join(kgDir, EmbedderNam
 type ErrNoEmbedder struct{ KgDir string }
 
 func (e *ErrNoEmbedder) Error() string {
-	return fmt.Sprintf("no embedding command configured: set KG_EMBED_COMMAND, or write %s (see `kg embed --init`)",
+	return fmt.Sprintf("no embedding command configured: set KG_EMBED_COMMAND, or write %s (see `kg sync --init`)",
 		EmbedderPath(e.KgDir))
 }
 

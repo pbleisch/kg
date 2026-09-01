@@ -45,6 +45,15 @@ type Record struct {
 	Prefer     string         // merge: "target" keeps the target's scalars
 	Attributes map[string]any // set
 	Unset      []string       // unset: attribute names to remove
+
+	// RequireSameType refuses a merge whose two ends disagree about type.
+	//
+	// It is opt-in, not opt-out, so that an existing manifest keeps the
+	// behaviour it had: a machine-written merge has already been adjudicated
+	// and folding a `person` into an `org` may well be the point. What the
+	// restriction protects is an interactive typo, which is why `kg merge`
+	// sets it unless --cross-type says otherwise.
+	RequireSameType bool // merge
 }
 
 // label is what errors and results call this record.
