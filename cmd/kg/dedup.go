@@ -21,14 +21,14 @@ on embedding fields. By default shows duplicates (dry-run). Use --apply to merge
 Examples:
   kg dedup concept --threshold 0.85 --fields name,description
   kg dedup concept --threshold 0.85 --fields name --apply
-  kg dedup concept --threshold 0.90 --fields name --apply --prefer-source`,
+  kg dedup concept --threshold 0.90 --fields name --apply --prefer target`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			typeName := args[0]
 			threshold, _ := cmd.Flags().GetFloat64("threshold")
 			fieldsStr, _ := cmd.Flags().GetString("fields")
 			apply, _ := cmd.Flags().GetBool("apply")
-			preferSource, _ := cmd.Flags().GetBool("prefer-source")
+			prefer, _ := cmd.Flags().GetString("prefer")
 			crossType, _ := cmd.Flags().GetBool("cross-type")
 
 			if fieldsStr == "" {
@@ -44,11 +44,11 @@ Examples:
 			}
 
 			opts := command.DedupOptions{
-				Threshold:    threshold,
-				Fields:       fields,
-				DryRun:       !apply,
-				PreferSource: preferSource,
-				CrossType:    crossType,
+				Threshold: threshold,
+				Fields:    fields,
+				DryRun:    !apply,
+				Prefer:    prefer,
+				CrossType: crossType,
 			}
 
 			result, err := command.FindDuplicates(cfg.kgDir, typeName, opts)
@@ -105,7 +105,7 @@ Examples:
 	cmd.Flags().Float64("threshold", 0.85, "Similarity threshold (0.0–1.0)")
 	cmd.Flags().String("fields", "", "Comma-separated embedding fields to compare (required)")
 	cmd.Flags().Bool("apply", false, "Actually merge duplicates (default is dry-run)")
-	cmd.Flags().Bool("prefer-source", false, "Source attributes win on merge conflicts")
+	cmd.Flags().String("prefer", "source", "Which side wins a scalar conflict on merge: source (incoming) or target")
 	cmd.Flags().Bool("cross-type", false, "Compare across entity types")
 	rootCmd.AddCommand(cmd)
 }

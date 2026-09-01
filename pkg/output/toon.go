@@ -23,7 +23,24 @@ func (f *toonFormatter) FormatEntity(w io.Writer, e *store.Entity) error {
 	sort.Strings(attrKeys)
 
 	for _, k := range attrKeys {
-		fmt.Fprintf(w, "%s: %v\n", k, e.Attributes[k])
+		v := e.Attributes[k]
+		switch {
+		case !isList(v):
+			fmt.Fprintf(w, "%s: %v\n", k, v)
+		case anyAttributed(v):
+			// Attributed items keep their sources, in the tabular shape this
+			// format already uses for a set of records.  Rendering them with
+			// %v would emit `[map[source:… text:…]]`, which is Go's debug
+			// formatting and not a value any consumer can read (P6).
+			items := store.DecodeItems(v)
+			fmt.Fprintf(w, "%s[%d]{text,source}:\n", k, len(items))
+			for _, it := range items {
+				fmt.Fprintf(w, "  %s,%s\n", quoteField(it.TextString()), quoteField(it.Source))
+			}
+		default:
+			fields := itemFields(v)
+			fmt.Fprintf(w, "%s[%d]: %s\n", k, len(fields), strings.Join(fields, ","))
+		}
 	}
 
 	// Collect and sort relation keys.
@@ -79,7 +96,14 @@ func (f *toonFormatter) FormatEntities(w io.Writer, entities []*store.Entity) er
 				vals = append(vals, e.Type)
 			default:
 				if v, ok := e.Attributes[col]; ok {
-					vals = append(vals, fmt.Sprintf("%v", v))
+					// One cell, one field: a list's items are joined with the
+					// same ";" relations already use inside a cell, and each
+					// item is quoted if it carries the row separator.
+					if isList(v) {
+						vals = append(vals, quoteField(strings.Join(store.AttrTexts(v), ";")))
+					} else {
+						vals = append(vals, fmt.Sprintf("%v", v))
+					}
 				} else if targets, ok := e.Relations[col]; ok {
 					vals = append(vals, strings.Join(targets, ";"))
 				} else {

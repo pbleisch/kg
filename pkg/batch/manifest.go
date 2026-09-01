@@ -13,10 +13,18 @@ import (
 // A Manifest is the file form of a batch.  It is a producer's serialization of
 // what [Apply] takes, not a second boundary.
 type Manifest struct {
-	Version        int            `yaml:"version" json:"version"`
-	IdempotencyKey string         `yaml:"idempotency_key,omitempty" json:"idempotency_key,omitempty"`
-	Actions        []Action       `yaml:"actions" json:"actions"`
-	Options        map[string]any `yaml:"options,omitempty" json:"options,omitempty"`
+	Version        int    `yaml:"version" json:"version"`
+	IdempotencyKey string `yaml:"idempotency_key,omitempty" json:"idempotency_key,omitempty"`
+
+	// Contributor is the entity id of the source this batch speaks for: one
+	// document, one batch, one source.  It is the unit of reset — a
+	// multi-valued attribute drops the items this contributor wrote before and
+	// keeps every other contributor's (ADR-0030).  A manifest that names none
+	// still applies; its items land carrying no source and are then permanent.
+	Contributor string `yaml:"contributor,omitempty" json:"contributor,omitempty"`
+
+	Actions []Action       `yaml:"actions" json:"actions"`
+	Options map[string]any `yaml:"options,omitempty" json:"options,omitempty"`
 }
 
 // An Action is a manifest's spelling of a [Record].
@@ -30,6 +38,7 @@ type Action struct {
 	Rel        string         `yaml:"rel,omitempty" json:"rel,omitempty"`
 	Prefer     string         `yaml:"prefer,omitempty" json:"prefer,omitempty"`
 	Attributes map[string]any `yaml:"attributes,omitempty" json:"attributes,omitempty"`
+	Unset      []string       `yaml:"unset,omitempty" json:"unset,omitempty"`
 }
 
 // DecodeManifest reads a YAML (or JSON, which is YAML) batch file.
@@ -59,7 +68,7 @@ func DecodeManifest(data []byte) (Envelope, []Record, error) {
 		sum := sha256.Sum256(data)
 		key = KeyFor("manifest", hex.EncodeToString(sum[:])[:32])
 	}
-	env, err := NewEnvelope(m.Version, key)
+	env, err := NewEnvelopeFrom(m.Version, key, m.Contributor)
 	if err != nil {
 		return Envelope{}, nil, err
 	}
@@ -76,6 +85,7 @@ func DecodeManifest(data []byte) (Envelope, []Record, error) {
 			To:         a.To,
 			Prefer:     a.Prefer,
 			Attributes: a.Attributes,
+			Unset:      a.Unset,
 		})
 	}
 	return env, records, nil

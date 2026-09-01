@@ -1,7 +1,6 @@
 package store
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 )
@@ -32,12 +31,37 @@ func MatchFilters(e *Entity, filters []AttrFilter) bool {
 	return true
 }
 
+// matchFilter tests one filter against one entity.
+//
+// A multi-valued attribute matches when ANY of its items matches: `categories`
+// holding two items is two answers to one question, and a filter asking for
+// one of them means it.  A scalar is a one-element list, so this is the same
+// rule rather than a second one.
 func matchFilter(e *Entity, f AttrFilter) bool {
 	raw, ok := e.Attributes[f.Attr]
 	if !ok {
 		return false
 	}
-	attrStr := fmt.Sprintf("%v", raw)
+	texts := AttrTexts(raw)
+	if f.Op == "!=" {
+		// "no item equals", which is the negation of "=".  Read as "some item
+		// differs", a two-item list would satisfy != against its own values.
+		for _, s := range texts {
+			if s == f.Value {
+				return false
+			}
+		}
+		return true
+	}
+	for _, s := range texts {
+		if matchText(s, f) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchText(attrStr string, f AttrFilter) bool {
 	switch f.Op {
 	case "=":
 		return attrStr == f.Value

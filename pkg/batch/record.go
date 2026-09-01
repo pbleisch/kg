@@ -18,6 +18,14 @@ const (
 	OpUnlink Op = "unlink"
 	OpDelete Op = "delete"
 	OpMerge  Op = "merge"
+
+	// OpUnset removes named attributes from an entity.  It is the first way
+	// kg has had to remove an attribute at all, and it is what removes an
+	// item no contributor's write will ever replace: contributor-scoped
+	// replace covers a re-ingest, and this covers "empty this field"
+	// (ADR-0030).  A producer wanting wipe-then-write emits `unset` then
+	// `upsert` in one manifest, which is atomic under --on-error=fail.
+	OpUnset Op = "unset"
 )
 
 // A Record is one typed write.  Which fields matter depends on Op; [Apply]
@@ -34,8 +42,9 @@ type Record struct {
 	From       string         // link, unlink, merge (source)
 	Rel        string         // link, unlink
 	To         string         // link, unlink
-	Prefer     string         // merge: "source" keeps the source's values
+	Prefer     string         // merge: "target" keeps the target's scalars
 	Attributes map[string]any // set
+	Unset      []string       // unset: attribute names to remove
 }
 
 // label is what errors and results call this record.
@@ -87,6 +96,9 @@ func (r Record) clone() Record {
 			attrs[k] = v
 		}
 		r.Attributes = attrs
+	}
+	if r.Unset != nil {
+		r.Unset = append([]string(nil), r.Unset...)
 	}
 	return r
 }

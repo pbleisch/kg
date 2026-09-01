@@ -27,6 +27,13 @@ says what a load refuses and what it merely reports, and
 Read both before touching a read path, the write boundary, or anything that walks the
 corpus.
 
+[ADR-0030](decisions/0030-attribute-merge-and-the-unit-of-reset.md) (2026-09-01,
+**unratified**) is what happens when two claims on one identity have to become one
+entity, and it makes `.kg/schema/` load-bearing: an attribute the schema declares
+`type: list` is multi-valued, and that decides whether a second document's items are
+kept or destroyed. Read it before touching a merge, the fold, or anything that reads an
+attribute value. It also restates ADR-0026's number.
+
 [docs/increments.md](docs/increments.md) is the current plan — numbered increments with
 goals, deliverables and done-conditions, covering both kg and the GDKB ingestion
 pipeline, plus what is deliberately not being built and which increment forces each of
@@ -87,17 +94,17 @@ and 2 are Paul's. Cite it for the numbers; do not treat it as settled.
 ## The write boundary
 
 `pkg/batch` is the only way anything becomes an entity. `batch.Apply` takes an
-[`Envelope`](pkg/batch/envelope.go) — version plus idempotency key, buildable
-only through `NewEnvelope` — and typed records. `kg apply`, the write commands
-(`create`, `set`, `link`, `unlink`, `delete`) and the MCP write tools are
-producers that enter through it; none holds validation, defaulting or
-normalization of its own (P7).
+[`Envelope`](pkg/batch/envelope.go) — version, idempotency key and contributor,
+buildable only through `NewEnvelope` / `NewEnvelopeFrom` — and typed records.
+`kg apply`, the write commands (`create`, `set`, `unset`, `link`, `unlink`,
+`delete`) and the MCP write tools are producers that enter through it; none
+holds validation, defaulting or normalization of its own (P7).
 
 Structure is refused, content is warned (P3): illegal attribute names, a type
-that disagrees with its id, an identity two records claim, a relation whose end
-resolves to nothing. **A refused batch writes nothing at all** — validation runs
-over the whole batch first, and while records apply a `store.Journal` remembers
-what each file held so `--on-error=fail` can put the graph back.
+that disagrees with its id, a relation whose end resolves to nothing. **A
+refused batch writes nothing at all** — validation runs over the whole batch
+first, and while records apply a `store.Journal` remembers what each file held
+so `--on-error=fail` can put the graph back.
 
 Two behaviours changed with it and will surprise: `command.Link` no longer
 mints a typeless stub for a missing source, and `kg apply` defaults to
@@ -114,7 +121,38 @@ Writes no longer sync anything — there is nothing to sync. A batch does refres
 vector sidecar for the entities it touched, when an embedder is configured.
 
 Applying one idempotency key twice applies it once — the ledger is
-`.kg/.cache/apply/<key>.json`.
+`.kg/.cache/apply/<key>.json`. It does **not** cover a re-ingest: the key is a
+hash of the manifest bytes, so a re-extracted document is a new key.
+Replace-by-contributor is what makes that converge.
+
+## One merge rule, in one place
+
+`pkg/merge` states what happens when two claims on one identity become one
+entity, and it is the **only** place that states it (ADR-0030). Both verbs call
+it: `command.UpsertEntity` and `command.Merge`. Do not restate it in a caller —
+`pkg/batch` held a second copy of upsert's rule and `kg merge` held an opposite
+one, which is the defect the ADR names.
+
+- **scalar**: the incoming value wins, and overwriting a *different* one warns.
+- **`type: list`**: multi-valued. Items are `{text, source}`; a write replaces
+  the items **its own contributor** wrote and leaves every other one's standing.
+  A scalar at such a field is a one-element list; **a string is never split on a
+  separator**.
+- **relation**: union.
+
+Two records of one batch claiming one identity are **folded into one** before
+validation (`pkg/batch/fold.go`), not refused — that refusal cost the pilot
+three of three multi-batch documents. A `create` under `--on-conflict=fail` is
+still refused; that is all `identity_collision` means now.
+
+An item carrying no source is never replaced by anybody, so a hand-authored edit
+survives every re-ingest and only `kg unset` removes it. That is why `unset`
+exists.
+
+Never read an attribute value with `fmt.Sprintf("%v", …)`. Use
+`store.AttrText` (one string) or `store.AttrTexts` (one per item): `%v` renders
+a multi-valued field as `[map[source:… text:…]]`, and that is the string every
+vector would be built from.
 
 ## Landing the Plane (Session Completion)
 

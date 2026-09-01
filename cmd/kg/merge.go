@@ -15,20 +15,29 @@ func init() {
 	cmd := &cobra.Command{
 		Use:   "merge <source> <target>",
 		Short: "Merge source entity into target, rewriting all links",
-		Long: `Merge combines two entities into one. Attributes from source are
-copied to target (target wins on conflicts unless --prefer-source).
-Outgoing links are unioned. All incoming links pointing to source
-are rewritten to point to target. The source entity is then deleted.`,
+		Long: `Merge combines two entities into one, by kg's one merge rule.
+
+A scalar attribute takes the incoming (source) value, and overwriting a
+different one is reported. An attribute the schema declares 'type: list' keeps
+both accounts: the two item sets concatenate, deduplicated on (source, text),
+because two entities being merged genuinely were written by different sources.
+Outgoing links are unioned. All incoming links pointing at source are rewritten
+to point at target, and the source entity is then deleted.
+
+--prefer target keeps the target's scalars instead. It applies to scalars only:
+a list keeps both sides and a relation unions, so neither has a side to prefer.
+The default flipped with ADR-0030 — it used to be target-wins, which made
+'kg merge' and 'kg apply' give opposite answers to the same question.`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			preferSource, _ := cmd.Flags().GetBool("prefer-source")
+			prefer, _ := cmd.Flags().GetString("prefer")
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
 			crossType, _ := cmd.Flags().GetBool("cross-type")
 
 			opts := command.MergeOptions{
-				PreferSource: preferSource,
-				DryRun:       dryRun,
-				CrossType:    crossType,
+				Prefer:    prefer,
+				DryRun:    dryRun,
+				CrossType: crossType,
 			}
 
 			// A merge rewrites every inbound link to the source, so it needs
@@ -66,7 +75,7 @@ are rewritten to point to target. The source entity is then deleted.`,
 			return nil
 		},
 	}
-	cmd.Flags().Bool("prefer-source", false, "Source attributes win on conflict instead of target")
+	cmd.Flags().String("prefer", "source", "Which side wins a scalar conflict: source (incoming) or target")
 	cmd.Flags().Bool("dry-run", false, "Show what would change without writing")
 	cmd.Flags().Bool("cross-type", false, "Allow merging entities of different types")
 	rootCmd.AddCommand(cmd)

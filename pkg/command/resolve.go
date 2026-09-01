@@ -134,7 +134,7 @@ func Resolve(kgDir string, opts ResolveOptions) (*ResolveResult, error) {
 			if !ok {
 				continue
 			}
-			s := fmt.Sprintf("%v", text)
+			s := store.AttrText(text)
 			if s == "" {
 				continue
 			}

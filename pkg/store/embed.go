@@ -139,7 +139,11 @@ func EmbedWith(kgDir string, emb *Embedder, rebuild, dryRun bool, entityIDs ...s
 			if !ok {
 				continue
 			}
-			text := fmt.Sprintf("%v", val)
+			// AttrText, not %v: a multi-valued field renders as
+			// `[map[source:… text:…]]` under %v, and every vector built from
+			// that string is built from Go's debug formatting rather than
+			// from what anyone wrote.
+			text := AttrText(val)
 			if text == "" {
 				continue
 			}
@@ -446,7 +450,7 @@ func MigrateLegacyVectors(kgDir string, dryRun bool) (*MigrateResult, error) {
 			// field is gone gets no checksum, which reads as always stale.
 			checksum := ""
 			if text, ok := e.Attributes[field]; ok {
-				checksum = TextChecksum(fmt.Sprintf("%v", text))
+				checksum = TextChecksum(AttrText(text))
 			}
 			rows = append(rows, harvested{
 				entry: vector.Entry{ID: e.ID, Type: e.Type, Field: field, Checksum: checksum},

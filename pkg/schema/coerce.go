@@ -31,6 +31,13 @@ func parseAttrValue(attrType, raw string) (any, error) {
 		return b, nil
 	case "date", "datetime":
 		return raw, nil
+	case TypeList:
+		// One string, one item.  **Never split on a separator.**
+		// `categories=design,mechanic` becomes a one-element list holding
+		// "design,mechanic", which is exactly what that value means today;
+		// splitting it would silently shred every value — every description,
+		// every quoted sentence — that legitimately contains a comma.
+		return []any{raw}, nil
 	default:
 		return raw, nil
 	}

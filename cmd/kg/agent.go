@@ -292,8 +292,8 @@ const skillTemplate = `---
 name: kg
 description: >
   Use the kg CLI to query and mutate the knowledge graph.
-  Available commands: create, get, find, set, delete, link, unlink, path, back, describe, types,
-  validate, resolve.
+  Available commands: create, get, find, set, unset, delete, link, unlink, path, back, describe,
+  types, validate, resolve.
 ---
 
 # Using kg (Knowledge Graph CLI)
@@ -306,7 +306,8 @@ kg describe <type> --dir={{.KGDir}}           # Show type schema
 kg create <type> <id> [attrs...] --dir={{.KGDir}}  # Create entity
 kg get <type:id> --dir={{.KGDir}}             # Get entity by ID
 kg find <type> [filters...] --dir={{.KGDir}}  # Find entities
-kg set <type:id> key=value --dir={{.KGDir}}   # Set attributes
+kg set <type:id> key=value --dir={{.KGDir}}   # Assign attributes (overwrites)
+kg unset <type:id> <attr...> --dir={{.KGDir}} # Remove attributes
 kg delete <type:id> --dir={{.KGDir}}          # Delete entity
 kg link <from> <rel> <to> --dir={{.KGDir}}    # Create relation
 kg unlink <from> <rel> <to> --dir={{.KGDir}}  # Remove relation
@@ -328,6 +329,30 @@ in place and moves no file.
 
 Everything else is a warning and the graph still loads — an unknown attribute, a
 schema violation, and a relation target that names nothing.
+
+## What happens when two records claim one identity
+
+kg has one merge rule and both verbs that combine two claims use it — an upsert
+landing on an existing entity, and ` + "`kg merge`" + `. The rule is by field kind, and
+the kind is what the type's schema declares (ADR-0030):
+
+- a **scalar** attribute takes the incoming value, and overwriting a *different*
+  one is reported as ` + "`attribute_overwritten`" + `.
+- an attribute the schema declares ` + "`type: list`" + ` is **multi-valued**. Its items
+  carry ` + "`{text, source}`" + `, and a write **replaces the items its own contributor
+  wrote before and leaves every other contributor's standing**. A scalar arriving
+  at such a field is a one-element list; a string is never split on a separator.
+- a **relation** unions.
+
+Two records of one batch claiming one identity are **folded into one** before
+anything is written, not refused: a document extracted in sections names its
+subject in more than one of them. A ` + "`create`" + ` under ` + "`--on-conflict=fail`" + ` still
+refuses, because a create asserts novelty.
+
+A batch names its contributor in the manifest (` + "`contributor: source:<id>`" + `); that
+is the unit of reset. A write with no contributor lands items carrying no
+source, which no later write replaces — so a hand-authored item survives every
+re-ingest, and ` + "`kg unset`" + ` is what removes it.
 
 ## Output Formats
 

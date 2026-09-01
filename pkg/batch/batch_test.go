@@ -121,16 +121,20 @@ func TestRefusesDanglingRelationTarget(t *testing.T) {
 	}
 }
 
+// A create asserts novelty, and under on-conflict=fail that assertion is the
+// producer's to keep: two creates of one identity are still refused, naming
+// both records.  This is the half of `identity_collision` the fold does not
+// take (ADR-0030).
 func TestRefusesIdentityCollisionNamingBoth(t *testing.T) {
 	kgDir := setupKG(t)
 	// Two records claiming one identity — including via normalization, which
 	// folds "Concept:Flow-State" onto the same file.
 	_, err := Apply(kgDir, env(t, "k3"), []Record{
-		{ID: "first", Op: OpUpsert,
+		{ID: "first", Op: OpCreate,
 			Entity: entity("concept:flow_state", "concept", map[string]any{"name": "Flow"})},
-		{ID: "second", Op: OpUpsert,
+		{ID: "second", Op: OpCreate,
 			Entity: entity("Concept:Flow-State", "Concept", map[string]any{"name": "Flow again"})},
-	}, Options{})
+	}, Options{OnConflict: ConflictFail})
 	errs, refused := Refused(err)
 	if !refused {
 		t.Fatalf("expected a structural refusal, got %v", err)

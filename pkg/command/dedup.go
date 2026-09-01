@@ -5,17 +5,18 @@ import (
 	"os"
 	"sort"
 
+	"github.com/pbleisch/kg/pkg/schema"
 	"github.com/pbleisch/kg/pkg/store"
 	"github.com/pbleisch/kg/pkg/vector"
 )
 
 // DedupOptions configures deduplication behavior.
 type DedupOptions struct {
-	Threshold    float64  // similarity threshold (0.0–1.0)
-	Fields       []string // embedding fields to compare
-	DryRun       bool     // report without merging
-	PreferSource bool     // source attributes win on conflict
-	CrossType    bool     // compare across entity types
+	Threshold float64  // similarity threshold (0.0–1.0)
+	Fields    []string // embedding fields to compare
+	DryRun    bool     // report without merging
+	Prefer    string   // scalar conflicts: "" or "source" (incoming wins), "target"
+	CrossType bool     // compare across entity types
 }
 
 // DedupCluster is a group of similar entities to be merged.
@@ -256,11 +257,13 @@ func bestMatchScore(indexed []entityVectors, i, j int, fields []string, threshol
 
 // ApplyDedup merges all duplicates in the result into their canonical entities.
 func ApplyDedup(kgDir string, result *DedupResult, opts DedupOptions) error {
+	kinds := schema.NewKinds(kgDir)
 	for _, cluster := range result.Clusters {
 		for _, dup := range cluster.Duplicates {
 			mergeOpts := MergeOptions{
-				PreferSource: opts.PreferSource,
-				CrossType:    opts.CrossType,
+				Prefer:    opts.Prefer,
+				CrossType: opts.CrossType,
+				Kinds:     kinds,
 			}
 			_, err := Merge(kgDir, dup.ID, cluster.CanonicalID, mergeOpts)
 			if err != nil {

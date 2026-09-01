@@ -220,6 +220,8 @@ func (s *Server) dispatch(name string, args json.RawMessage) (any, error) {
 		return s.toolCreate(args)
 	case "kg_set":
 		return s.toolSet(args)
+	case "kg_unset":
+		return s.toolUnset(args)
 	case "kg_delete":
 		return s.toolDelete(args)
 	case "kg_link":
@@ -320,6 +322,17 @@ func (s *Server) toolSet(args json.RawMessage) (*store.Entity, error) {
 		return nil, fmt.Errorf("invalid arguments: %w", err)
 	}
 	return batch.SetAttrs(s.kgDir, p.ID, p.Attributes)
+}
+
+func (s *Server) toolUnset(args json.RawMessage) (*store.Entity, error) {
+	var p struct {
+		ID         string   `json:"id"`
+		Attributes []string `json:"attributes"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %w", err)
+	}
+	return batch.UnsetAttrs(s.kgDir, p.ID, p.Attributes)
 }
 
 type deleteResult struct {
@@ -592,12 +605,24 @@ func buildToolDefs() []toolDef {
 		},
 		{
 			Name:        "kg_set",
-			Description: "Update attributes on an existing entity (merge semantics)",
+			Description: "Assign attributes on an existing entity. `set` overwrites; `create` with upsert merges by field kind",
 			InputSchema: jsonSchema{
 				Type: "object",
 				Properties: map[string]schemaProp{
 					"id":         {Type: "string", Description: "Entity ID"},
 					"attributes": {Type: "object", Description: "Key-value attributes to set/update"},
+				},
+				Required: []string{"id", "attributes"},
+			},
+		},
+		{
+			Name:        "kg_unset",
+			Description: "Remove named attributes from an entity. The only way kg removes an attribute, and the only thing that removes an item carrying no source",
+			InputSchema: jsonSchema{
+				Type: "object",
+				Properties: map[string]schemaProp{
+					"id":         {Type: "string", Description: "Entity ID"},
+					"attributes": {Type: "array", Description: "Attribute names to remove"},
 				},
 				Required: []string{"id", "attributes"},
 			},

@@ -152,6 +152,46 @@ linear projection at 100k. The headroom is for slower disks, spinning media, and
 corpora with more content per entity — not for regressions. A change that
 consumes it is a regression whether or not it stays inside.
 
+### Restated for per-item source attribution (ADR-0030, 2026-09-01)
+
+ADR-0030 makes an attribute the schema declares `type: list` multi-valued, with
+each item carrying `{text, source}`. **That moves the numbers above, and the
+number is restated here rather than quietly exceeded.**
+
+Measured on a real copy of the corpus (26,718 files, 14,644,671 bytes):
+
+| corpus state | bytes | delta | whole-graph walk | projected at 100k |
+|---|---|---|---|---|
+| today | 14,644,671 | — | 0.82 s | ~3 s |
+| `description` → attributed `details` | 16,641,649 | +13.64% | 0.86 s | ~3.2 s |
+| **both fields fully attributed** | **21,777,170** | **+48.7%** | **0.93 s** | **~3.5 s** |
+
+So at the proposed 100,000-entity ceiling a whole-graph traversal projects to
+**about 3.5 s**, against the ~3 s this ADR projected and inside its stated 5 s
+budget — but the headroom this ADR said was *"for slower disks, spinning media,
+and corpora with more content per entity — not for regressions"* is now partly
+spent on content instead. That is a deliberate trade: the bytes buy provenance
+per item, which is what makes a re-ingest converge (P5) and what increment 7's
+OKF `sources[]` renders. **The ceiling and the budgets are unchanged. What
+changes is how much of the headroom is already committed.**
+
+Two things this restatement is careful about:
+
+- **ADR-0030's implementation costs nothing today.** Measured with the binary
+  before and after, three runs each on the same corpus: `kg stats`
+  0.84–0.91 s → 0.83–0.85 s, `kg validate` 0.87–0.92 s → 0.82–0.85 s,
+  `kg find concept` 0.65 s → 0.65 s, `kg get` 17 ms → 16 ms, and `kg validate`
+  emits byte-identical output. The corpus carries no attributed items yet. The
+  21.78 MB figure is what the **rebuild** will write, not what this change
+  wrote.
+- **The `description` → `details` row is not scheduled.** ADR-0030 leaves that
+  field to increment 5's new graph rather than migrating the repaired one. The
+  row is here because the budget has to be stated against the design's full
+  extent, not against the half of it that has landed.
+
+This ADR stays **unratified**. Open questions 1 and 2 below are still Paul's,
+and this restatement does not answer either.
+
 ### A resident service is permitted, and is never required
 
 P4 stands as written. A service may exist as an optimization. It may never be on
@@ -210,3 +250,5 @@ Related
 - ADR-0027 (deleting LadybugDB, the index and the daemon) — the change these
   measurements justify.
 - ADR-0008 (daemon) — superseded.
+- ADR-0030 (attribute merge and the unit of reset) — the change whose byte and
+  latency cost is restated above.

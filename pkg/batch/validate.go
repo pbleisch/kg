@@ -109,10 +109,12 @@ func validate(kgDir string, records []Record) ([]RecordError, []Warning) {
 			if localID == "" {
 				fail(i, r, "bad_id", "entity.id", "empty local id")
 			}
-			// Identity uniqueness, within the batch: one file, one record.
-			// The other half of P3 — two *files* claiming one identity — is a
-			// load-time check and lands with the corpus repair, because GDKB
-			// would stop loading the moment it did.
+			// Identity uniqueness, within the batch — for the records the
+			// fold does not take.  Two upserts of one id are folded into one
+			// record before this runs (see fold), so what is left here is a
+			// `create` under on-conflict=fail, which asserts novelty and must
+			// keep that assertion.  The other half of P3 — two *files*
+			// claiming one identity — is the load-time check.
 			if first := declared[e.ID]; first != i {
 				fail(i, r, "identity_collision", "entity.id", fmt.Sprintf(
 					"identity %q is declared by record %d (%s) and record %d (%s)",
@@ -145,6 +147,25 @@ func validate(kgDir string, records []Record) ([]RecordError, []Warning) {
 			}
 			if err := store.ValidateAttributeNames(r.Attributes); err != nil {
 				fail(i, r, "illegal_attribute", "attributes", err.Error())
+			}
+			if !resolves(kgDir, r.Target, declared) {
+				fail(i, r, "unresolved_target", "target", fmt.Sprintf(
+					"target %q does not exist and no record declares it", r.Target))
+			}
+
+		case OpUnset:
+			if r.Target == "" {
+				fail(i, r, "missing_target", "target", "unset names no target")
+				continue
+			}
+			if len(r.Unset) == 0 {
+				fail(i, r, "empty_unset", "unset", "unset names no attributes")
+			}
+			for _, name := range r.Unset {
+				if !store.ValidAttributeName(name) {
+					fail(i, r, "illegal_attribute", "unset", fmt.Sprintf(
+						"%q is not a legal attribute name (must match [a-z][a-z0-9_]*)", name))
+				}
 			}
 			if !resolves(kgDir, r.Target, declared) {
 				fail(i, r, "unresolved_target", "target", fmt.Sprintf(

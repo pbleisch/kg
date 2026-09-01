@@ -3,23 +3,39 @@ package command
 import (
 	"fmt"
 
+	"github.com/pbleisch/kg/pkg/merge"
+	"github.com/pbleisch/kg/pkg/schema"
 	"github.com/pbleisch/kg/pkg/store"
 )
 
 // MergeResult describes the outcome of a merge operation.
 type MergeResult struct {
-	SourceID          string `json:"source_id"`
-	TargetID          string `json:"target_id"`
-	AttrsUpdated      int    `json:"attrs_updated"`
-	LinksAdded        int    `json:"links_added"`
-	IncomingRewritten int    `json:"incoming_rewritten"`
+	SourceID          string          `json:"source_id"`
+	TargetID          string          `json:"target_id"`
+	AttrsUpdated      int             `json:"attrs_updated"`
+	LinksAdded        int             `json:"links_added"`
+	IncomingRewritten int             `json:"incoming_rewritten"`
+	Warnings          []merge.Warning `json:"warnings,omitempty"`
 }
 
 // MergeOptions configures merge behavior.
 type MergeOptions struct {
-	PreferSource bool
-	DryRun       bool
-	CrossType    bool
+	// Prefer names which side of a *scalar* conflict wins: "" or "source" for
+	// the incoming value, "target" for the value already there.
+	//
+	// The default flipped with ADR-0030.  It used to be target-wins, which
+	// made `kg merge` and `upsert` give opposite answers to the same
+	// question; kg now holds one merge model and this flag narrows to the one
+	// field kind where a preference was ever meaningful.  A multi-valued
+	// attribute keeps both accounts and a relation unions, so neither has a
+	// side to prefer.
+	Prefer    string
+	DryRun    bool
+	CrossType bool
+
+	// Kinds is an optional per-graph schema cache; nil reads each schema as
+	// it is needed.
+	Kinds *schema.Kinds
 	// Graph is an optional pre-loaded graph. A merge has to rewrite every
 	// inbound link to the source, and finding those means reading every
 	// entity; a caller merging in a loop passes the graph it already has
@@ -49,33 +65,37 @@ func Merge(kgDir, sourceID, targetID string, opts MergeOptions) (*MergeResult, e
 		TargetID: targetID,
 	}
 
-	// Merge attributes.
-	if target.Attributes == nil {
-		target.Attributes = make(map[string]any)
-	}
-	for k, v := range source.Attributes {
-		if _, exists := target.Attributes[k]; exists && !opts.PreferSource {
-			continue // target wins on conflicts
+	// Merge attributes by the one rule (ADR-0030).  A merge is a fold of two
+	// claims neither of which is the graph's prior state, so multi-valued
+	// attributes concatenate rather than replace: the two entities genuinely
+	// were written by different sources and both accounts are true.  Only the
+	// scalar rule has a side to prefer, which is why --prefer narrows to it.
+	mergedAttrs, warns := merge.Attributes(target.Attributes, source.Attributes,
+		kindsFor(kgDir, opts.Kinds, target.Type), merge.Options{
+			Mode:           merge.Append,
+			PreferExisting: opts.Prefer == "target",
+		})
+	result.Warnings = warns
+	for k, v := range mergedAttrs {
+		if old, had := target.Attributes[k]; !had || store.AttrText(old) != store.AttrText(v) {
+			result.AttrsUpdated++
 		}
-		target.Attributes[k] = v
-		result.AttrsUpdated++
 	}
+	target.Attributes = mergedAttrs
 
-	// Union outgoing links from source into target.
-	if target.Relations == nil {
-		target.Relations = make(map[string][]string)
-	}
-	for rel, srcTargets := range source.Relations {
-		for _, t := range srcTargets {
-			if t == targetID {
-				continue // skip would-be self-reference
-			}
-			if !containsString(target.Relations[rel], t) {
-				target.Relations[rel] = append(target.Relations[rel], t)
-				result.LinksAdded++
+	// Union outgoing links from source into target, skipping the
+	// self-reference the merge would otherwise create.
+	srcRels := make(map[string][]string, len(source.Relations))
+	for rel, targets := range source.Relations {
+		for _, t := range targets {
+			if t != targetID {
+				srcRels[rel] = append(srcRels[rel], t)
 			}
 		}
 	}
+	mergedRels, added := merge.Relations(target.Relations, srcRels)
+	target.Relations = mergedRels
+	result.LinksAdded = added
 
 	// Find all entities that link to source and rewrite those links.
 	//

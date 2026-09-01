@@ -133,6 +133,17 @@ a corpus that will not load must still be walkable by the tool that repairs it, 
 `store.ListEntityFiles` enforces nothing by design, and every whole-corpus rewrite has
 to use it rather than a load.
 
+**One cost this paragraph did not anticipate, added 2026-09-01.**
+[ADR-0030](../decisions/0030-attribute-merge-and-the-unit-of-reset.md) makes an
+attribute the type's schema declares `type: list` multi-valued, which means the schema
+now decides **what a write does** — whether a second document's items are kept beside
+the first's or destroy them. Nothing is refused on it, so the enforced/advised split is
+untouched and this principle still holds as stated. But `.kg/schema/` is now
+*load-bearing*: a graph whose schema is lost or edited merges differently and no error
+says so, and a rewrite has to carry the schema as well as the entities. That is an Area
+A consequence. ADR-0030 is **unratified**, and this is the decision in it that is
+Paul's.
+
 ## Area B — The interface: how other programs reach kg
 
 *What may be written in, what comes out, and how a caller reaches kg at all.* Three

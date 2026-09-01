@@ -3,9 +3,12 @@ package batch
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/pbleisch/kg/pkg/command"
+	"github.com/pbleisch/kg/pkg/merge"
+	"github.com/pbleisch/kg/pkg/schema"
 	"github.com/pbleisch/kg/pkg/store"
 )
 
@@ -54,6 +57,12 @@ func Apply(kgDir string, env Envelope, records []Record, opts Options) (*Result,
 		recs[i].normalize()
 	}
 
+	// Records claiming one identity become one record before anything else
+	// looks at them.  It is one rule rather than a special case for batches:
+	// the same merge that runs when an upsert lands on an existing file runs
+	// here, across the records of one submission (ADR-0030).
+	recs, foldWarns := fold(kgDir, recs, env.Contributor(), opts.OnConflict)
+
 	errs, warns := validate(kgDir, recs)
 	if len(errs) > 0 {
 		return nil, &RefusedError{Errors: errs}
@@ -66,7 +75,7 @@ func Apply(kgDir string, env Envelope, records []Record, opts Options) (*Result,
 		TotalRecords:   len(recs),
 		Counts:         map[string]int{},
 		RecordIDs:      make([]string, 0, len(recs)),
-		Warnings:       warns,
+		Warnings:       append(foldWarns, warns...),
 	}
 	for _, r := range recs {
 		res.Counts[string(r.Op)]++
@@ -112,6 +121,11 @@ func Apply(kgDir string, env Envelope, records []Record, opts Options) (*Result,
 	// deliberately trade that atomicity for progress and do not roll back.
 	journal := store.BeginJournal(kgDir)
 
+	// One schema read per type for the whole batch.  A real document is 1,558
+	// records over 1,298 identities; reading a schema per record would make
+	// the merge rule's one question the most expensive thing in the write.
+	kinds := schema.NewKinds(kgDir)
+
 	abort := func(err error) (*Result, error) {
 		rbErr := journal.Rollback()
 		if rbErr != nil {
@@ -125,7 +139,11 @@ func Apply(kgDir string, env Envelope, records []Record, opts Options) (*Result,
 		switch r.Op {
 		case OpCreate, OpUpsert:
 			var skipped bool
-			skipped, err = applyEntity(kgDir, r, opts)
+			var mw []merge.Warning
+			skipped, mw, err = applyEntity(kgDir, r, opts, command.UpsertOptions{
+				Contributor: env.Contributor(), Kinds: kinds,
+			})
+			res.Warnings = append(res.Warnings, translate(r, mw)...)
 			switch {
 			case err != nil, skipped:
 			default:
@@ -135,7 +153,14 @@ func Apply(kgDir string, env Envelope, records []Record, opts Options) (*Result,
 				res.Skipped++
 			}
 		case OpSet:
-			err = applySet(kgDir, r)
+			var mw []merge.Warning
+			mw, err = applySet(kgDir, r, kinds, env.Contributor())
+			res.Warnings = append(res.Warnings, translate(r, mw)...)
+			if err == nil {
+				res.Updated++
+			}
+		case OpUnset:
+			err = applyUnset(kgDir, r)
 			if err == nil {
 				res.Updated++
 			}
@@ -155,12 +180,15 @@ func Apply(kgDir string, env Envelope, records []Record, opts Options) (*Result,
 				res.Deleted++
 			}
 		case OpMerge:
-			_, err = command.Merge(kgDir, r.From, r.Target, command.MergeOptions{
-				PreferSource: r.Prefer == "source",
-				CrossType:    true,
-				Graph:        graph,
+			var mr *command.MergeResult
+			mr, err = command.Merge(kgDir, r.From, r.Target, command.MergeOptions{
+				Prefer:    r.Prefer,
+				CrossType: true,
+				Graph:     graph,
+				Kinds:     kinds,
 			})
 			if err == nil {
+				res.Warnings = append(res.Warnings, translate(r, mr.Warnings)...)
 				res.Updated++
 			}
 		}
@@ -226,7 +254,7 @@ func refreshVectors(kgDir string, recs []Record) error {
 			if r.Entity != nil {
 				ids = append(ids, r.Entity.ID)
 			}
-		case OpSet, OpDelete:
+		case OpSet, OpUnset, OpDelete:
 			ids = append(ids, r.Target)
 		case OpMerge:
 			ids = append(ids, r.From, r.Target)
@@ -241,68 +269,133 @@ func refreshVectors(kgDir string, recs []Record) error {
 
 // applyEntity writes a create or upsert.  `skipped` says the conflict policy
 // left an existing entity alone.
-func applyEntity(kgDir string, r Record, opts Options) (skipped bool, err error) {
+func applyEntity(kgDir string, r Record, opts Options, uo command.UpsertOptions) (skipped bool, warns []merge.Warning, err error) {
 	if r.Op == OpUpsert {
-		if _, err := command.UpsertEntity(kgDir, r.Entity); err != nil {
-			return false, fmt.Errorf("upserting %q: %w", r.Entity.ID, err)
+		_, warns, err := command.UpsertEntity(kgDir, r.Entity, uo)
+		if err != nil {
+			return false, warns, fmt.Errorf("upserting %q: %w", r.Entity.ID, err)
 		}
-		return false, nil
+		return false, warns, nil
 	}
-	return applyCreate(kgDir, r, opts.OnConflict)
+	return applyCreate(kgDir, r, opts.OnConflict, uo)
 }
 
-func applyCreate(kgDir string, r Record, onConflict ConflictPolicy) (skipped bool, err error) {
-	existing, readErr := store.ReadEntity(kgDir, r.Entity.ID)
-	if readErr == nil {
+// applyCreate writes a create under its conflict policy.
+//
+// The merge branch used to spell out its own attribute and relation rules,
+// which were upsert's rules written a second time.  It calls the one rule now
+// (ADR-0030): two copies of a merge rule are two merge rules the moment either
+// is edited.
+func applyCreate(kgDir string, r Record, onConflict ConflictPolicy, uo command.UpsertOptions) (skipped bool, warns []merge.Warning, err error) {
+	if _, readErr := store.ReadEntity(kgDir, r.Entity.ID); readErr == nil {
 		switch onConflict {
 		case ConflictFail:
-			return false, fmt.Errorf("entity %q already exists", r.Entity.ID)
+			return false, nil, fmt.Errorf("entity %q already exists", r.Entity.ID)
 		case ConflictSkip:
-			return true, nil
+			return true, nil, nil
 		case ConflictMerge:
-			if existing.Attributes == nil {
-				existing.Attributes = make(map[string]any)
+			_, warns, err := command.UpsertEntity(kgDir, r.Entity, uo)
+			if err != nil {
+				return false, warns, fmt.Errorf("writing merged entity %q: %w", r.Entity.ID, err)
 			}
-			for k, v := range r.Entity.Attributes {
-				existing.Attributes[k] = v
-			}
-			for rel, targets := range r.Entity.Relations {
-				if existing.Relations == nil {
-					existing.Relations = make(map[string][]string)
-				}
-				for _, t := range targets {
-					if !containsString(existing.Relations[rel], t) {
-						existing.Relations[rel] = append(existing.Relations[rel], t)
-					}
-				}
-			}
-			if err := store.WriteEntity(kgDir, existing); err != nil {
-				return false, fmt.Errorf("writing merged entity %q: %w", r.Entity.ID, err)
-			}
-			return false, nil
+			return false, warns, nil
 		}
 	}
-	if err := store.WriteEntity(kgDir, r.Entity); err != nil {
-		return false, fmt.Errorf("creating entity %q: %w", r.Entity.ID, err)
+	_, warns, err = command.UpsertEntity(kgDir, r.Entity, uo)
+	if err != nil {
+		return false, warns, fmt.Errorf("creating entity %q: %w", r.Entity.ID, err)
 	}
-	return false, nil
+	return false, warns, nil
 }
 
-func applySet(kgDir string, r Record) error {
+// applySet assigns attributes.  `set` is an assignment, not a merge: it is the
+// verb that says "this field now holds this", and `unset` is its inverse.
+// What it does report is the one loss that is not obvious from the verb —
+// replacing a multi-valued attribute that held other contributors' items.
+func applySet(kgDir string, r Record, kinds *schema.Kinds, contributor string) ([]merge.Warning, error) {
 	e, err := store.ReadEntity(kgDir, r.Target)
 	if err != nil {
-		return fmt.Errorf("reading target %q: %w", r.Target, err)
+		return nil, fmt.Errorf("reading target %q: %w", r.Target, err)
 	}
 	if e.Attributes == nil {
 		e.Attributes = make(map[string]any, len(r.Attributes))
 	}
-	for k, v := range r.Attributes {
-		e.Attributes[k] = v
+	fk := kinds.For(e.Type)
+	var warns []merge.Warning
+	for _, k := range sortedAttrKeys(r.Attributes) {
+		if fk.IsList(k) {
+			if n := attributedItems(e.Attributes[k]); n > 0 {
+				warns = append(warns, merge.Warning{
+					Code:  "attribution_discarded",
+					Field: "attributes." + k,
+					Message: fmt.Sprintf(
+						"set replaced %s, discarding %d attributed item(s); `upsert` keeps other contributors' items, `set` does not",
+						k, n),
+				})
+			}
+			// The items an assignment writes still carry the batch's
+			// contributor: whose account this is belongs to the batch, not to
+			// the verb.  They are stamped, deduplicated and ordered exactly as
+			// an upsert would leave them, so `set` and `upsert` cannot produce
+			// two shapes of the same field.
+			e.Attributes[k] = store.EncodeItems(merge.Items(nil, store.DecodeItems(r.Attributes[k]),
+				merge.Options{Contributor: contributor, Mode: merge.Replace}))
+			continue
+		}
+		e.Attributes[k] = r.Attributes[k]
+	}
+	if err := store.WriteEntity(kgDir, e); err != nil {
+		return warns, fmt.Errorf("writing target %q: %w", r.Target, err)
+	}
+	return warns, nil
+}
+
+// applyUnset removes named attributes.  Removing one that is not there is not
+// an error: unset says what the entity must not carry, and applying it twice
+// says it twice.
+func applyUnset(kgDir string, r Record) error {
+	e, err := store.ReadEntity(kgDir, r.Target)
+	if err != nil {
+		return fmt.Errorf("reading target %q: %w", r.Target, err)
+	}
+	for _, name := range r.Unset {
+		delete(e.Attributes, name)
 	}
 	if err := store.WriteEntity(kgDir, e); err != nil {
 		return fmt.Errorf("writing target %q: %w", r.Target, err)
 	}
 	return nil
+}
+
+// attributedItems counts the items of a stored value that name a source.
+func attributedItems(v any) int {
+	n := 0
+	for _, it := range store.DecodeItems(v) {
+		if it.Source != "" {
+			n++
+		}
+	}
+	return n
+}
+
+func sortedAttrKeys(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// translate carries a merge warning across the package boundary.  pkg/merge
+// cannot import this package — that is the cycle — so the boundary restates
+// the warning in its own type rather than the rule in its own code.
+func translate(r Record, ws []merge.Warning) []Warning {
+	out := make([]Warning, 0, len(ws))
+	for _, w := range ws {
+		out = append(out, Warning{Record: r.label(), Code: w.Code, Message: w.Message})
+	}
+	return out
 }
 
 // KeyFor derives a stable idempotency key from a prefix and a content hash.

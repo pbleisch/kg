@@ -33,7 +33,19 @@ func (f *humanFormatter) FormatEntity(w io.Writer, e *store.Entity) error {
 
 	for _, k := range attrKeys {
 		label := k + ":"
-		fmt.Fprintf(w, "  %-*s %v\n", maxKeyLen+1, label, e.Attributes[k])
+		v := e.Attributes[k]
+		if !isList(v) {
+			fmt.Fprintf(w, "  %-*s %v\n", maxKeyLen+1, label, v)
+			continue
+		}
+		fmt.Fprintf(w, "  %-*s\n", maxKeyLen+1, label)
+		for _, it := range store.DecodeItems(v) {
+			if it.Source != "" {
+				fmt.Fprintf(w, "    - %s  [%s]\n", it.TextString(), it.Source)
+				continue
+			}
+			fmt.Fprintf(w, "    - %s\n", it.TextString())
+		}
 	}
 
 	// Relations.

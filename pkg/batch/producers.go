@@ -85,6 +85,21 @@ func UnlinkRef(kgDir, from, rel, to string) error {
 	return err
 }
 
+// UnsetAttrs removes attributes from an entity through the write boundary.
+//
+// It is the only way kg has to remove an attribute, and it is what removes an
+// item no contributor will ever replace: a multi-valued attribute written with
+// no contributor carries no source, so replace-by-contributor never touches it
+// and a hand-authored edit survives every re-ingest until this says otherwise
+// (ADR-0030).
+func UnsetAttrs(kgDir, id string, names []string) (*store.Entity, error) {
+	target := store.NormalizeEntityID(id)
+	if _, err := singleton(kgDir, Record{Op: OpUnset, Target: target, Unset: names}, Options{}); err != nil {
+		return nil, err
+	}
+	return store.ReadEntity(kgDir, target)
+}
+
 // DeleteRef removes one entity through the write boundary.
 func DeleteRef(kgDir, id string) error {
 	_, err := singleton(kgDir, Record{Op: OpDelete, Target: id}, Options{})

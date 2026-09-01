@@ -4,13 +4,33 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/pbleisch/kg/pkg/merge"
+	"github.com/pbleisch/kg/pkg/schema"
 	"github.com/pbleisch/kg/pkg/store"
 )
 
-// UpsertEntity creates a new entity or merges into an existing one using
-// full entity data. Attributes from e overwrite existing; relations are
-// merged additively (new targets appended, existing preserved).
-func UpsertEntity(kgDir string, e *store.Entity) (*store.Entity, error) {
+// UpsertOptions configure one upsert.
+type UpsertOptions struct {
+	// Contributor is the entity id of the source this write speaks for.  It
+	// is the unit of reset: a multi-valued attribute drops the items this
+	// contributor wrote before and keeps everyone else's.  Empty means the
+	// write speaks for nobody, and its items are never replaced.
+	Contributor string
+
+	// Kinds is an optional per-graph schema cache.  A caller upserting in a
+	// loop passes one so each type's schema is read once; nil reads it per
+	// call.
+	Kinds *schema.Kinds
+}
+
+// UpsertEntity creates a new entity or merges into an existing one.
+//
+// The merge rule is not stated here.  It is [merge.Into] — scalars take the
+// incoming value and report an overwrite, multi-valued attributes replace this
+// contributor's own items and keep every other one's, relations union — and
+// `kg merge` calls the same function, so the two verbs cannot drift apart
+// again (ADR-0030).
+func UpsertEntity(kgDir string, e *store.Entity, opts UpsertOptions) (*store.Entity, []merge.Warning, error) {
 	// Normalize IDs and type before persisting.
 	e.ID = store.NormalizeEntityID(e.ID)
 	e.Type = store.ToSnakeCase(e.Type)
@@ -25,47 +45,47 @@ func UpsertEntity(kgDir string, e *store.Entity) (*store.Entity, error) {
 		}
 	}
 
+	kinds := kindsFor(kgDir, opts.Kinds, e.Type)
+	mopts := merge.Options{Contributor: opts.Contributor, Mode: merge.Replace}
+
 	existing, readErr := store.ReadEntity(kgDir, e.ID)
 	if readErr != nil {
+		// Nothing to merge into, but the incoming items still have to be
+		// stamped with the contributor and ordered the way a merge would
+		// leave them, or the first write and the second differ for no reason.
+		warns := stampNew(e, kinds, mopts)
 		if err := store.WriteEntity(kgDir, e); err != nil {
-			return nil, fmt.Errorf("writing entity: %w", err)
+			return nil, warns, fmt.Errorf("writing entity: %w", err)
 		}
-		return e, nil
+		return e, warns, nil
 	}
 
-	// Merge attributes (new wins).
-	if existing.Attributes == nil {
-		existing.Attributes = make(map[string]any)
-	}
-	for k, v := range e.Attributes {
-		existing.Attributes[k] = v
-	}
-
-	// Merge relations additively.
-	if existing.Relations == nil {
-		existing.Relations = make(map[string][]string)
-	}
-	for rel, targets := range e.Relations {
-		for _, t := range targets {
-			if !containsString(existing.Relations[rel], t) {
-				existing.Relations[rel] = append(existing.Relations[rel], t)
-			}
-		}
-	}
-
+	warns := merge.Into(existing, e, kinds, mopts)
 	if err := store.WriteEntity(kgDir, existing); err != nil {
-		return nil, fmt.Errorf("writing entity: %w", err)
+		return nil, warns, fmt.Errorf("writing entity: %w", err)
 	}
-	return existing, nil
+	return existing, warns, nil
 }
 
-func containsString(ss []string, s string) bool {
-	for _, v := range ss {
-		if v == s {
-			return true
-		}
+// stampNew applies the multi-valued rule to an entity with nothing to merge
+// into, so that `upsert` twice and `upsert` once leave the same bytes.
+func stampNew(e *store.Entity, kinds schema.FieldKinds, opts merge.Options) []merge.Warning {
+	if len(e.Attributes) == 0 || !kinds.Any() {
+		return nil
 	}
-	return false
+	attrs, warns := merge.Attributes(nil, e.Attributes, kinds, opts)
+	e.Attributes = attrs
+	return warns
+}
+
+// kindsFor answers the schema's one question, building a cache when the caller
+// did not pass one.  A caller in a loop passes its own; a caller with one
+// entity should not have to.
+func kindsFor(kgDir string, cache *schema.Kinds, typeName string) schema.FieldKinds {
+	if cache == nil {
+		cache = schema.NewKinds(kgDir)
+	}
+	return cache.For(typeName)
 }
 
 // ParseAttrs converts ["key=value", ...] into a map. Each argument is split

@@ -184,6 +184,14 @@ func checkAttrType(typeName string, val any) bool {
 		// Dates are stored as strings; accept string values.
 		_, ok := val.(string)
 		return ok
+	case TypeList:
+		// Every value is a legal list, and that is the rule rather than a gap
+		// in it.  A slice is a list; anything else is the one-element list
+		// holding it (OKF §5.2, and [store.AsList]).  Cardinality is content
+		// and nothing is refused on it (P3, ADR-0028), so the direction that
+		// *is* reportable is the other one — a list arriving at a field the
+		// schema calls a string is caught by the "string" case above.
+		return true
 	default:
 		return true
 	}
