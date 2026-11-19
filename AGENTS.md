@@ -34,18 +34,10 @@ entity, and it makes `.kg/schema/` load-bearing: an attribute the schema declare
 kept or destroyed. Read it before touching a merge, the fold, or anything that reads an
 attribute value. It also restates ADR-0026's number.
 
-[docs/increments.md](docs/increments.md) is the current plan — numbered increments with
-goals, deliverables and done-conditions, covering both kg and the GDKB ingestion
-pipeline, plus what is deliberately not being built and which increment forces each of
-PRINCIPLES.md's open questions. Read it before starting work that sounds like a
-milestone; it is edited as increments land, so it is a plan and not an ADR.
-
 Build and test are plain Go — `mage build`, `mage check`. No CGO, no native library:
 increment 3 deleted LadybugDB, the index and the daemon (ADR-0027), and CI builds with
-`CGO_ENABLED=0` so a C dependency cannot creep back in. **Verify locally — CI is not a
-usable signal.** Every run on `main` since v0.9.3 fails at the `Test` step (Linux-only;
-the suite passes on macOS), and as of 2026-08 GitHub Actions will not start jobs on this
-account at all for billing reasons.
+`CGO_ENABLED=0` so a C dependency cannot creep back in. Run `mage check` before you
+push. CI runs the same checks on Linux, plus the race detector and the integration tests.
 
 ## Identity, and what a load refuses
 

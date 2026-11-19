@@ -293,11 +293,6 @@ server (0007), agent integration (0021), where the embedding command is
 configured (0025), the read budget and scale ceiling (0026, **unratified**), and
 the deletion of the index and the daemon (0027, superseding 0008 and 0022).
 
-[docs/increments.md](docs/increments.md) is the plan: where kg and the GDKB ingestion
-pipeline go next, as numbered increments with a goal, deliverables and a checkable
-done-condition. It records what is deliberately *not* being built as carefully as what
-is, and it is edited as increments land.
-
 ## License
 
 See [LICENSE](LICENSE) for details.
