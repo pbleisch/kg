@@ -33,18 +33,19 @@ VER=$(curl -fsSL https://api.github.com/repos/pbleisch/kg/releases/latest \
   | grep '"tag_name"' | cut -d'"' -f4) && \
 OS=$(uname -s | tr '[:upper:]' '[:lower:]') && \
 ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && \
-curl -fsSL "https://github.com/pbleisch/kg/releases/download/${VER}/kg_${VER}_${OS}_${ARCH}.tar.gz" \
-  | sudo tar xzf - -C /usr/local/bin
+curl -fsSL "https://github.com/pbleisch/kg/releases/download/${VER}/kg_${VER#v}_${OS}_${ARCH}.tar.gz" \
+  | sudo tar xzf - -C /usr/local/bin kg
 ```
 
-The archive contains one static binary and nothing else. kg is pure Go: no
-native library, no runtime dependency, nothing to keep beside it.
+The archive holds one static binary, plus the LICENSE and README; the command
+above extracts only `kg`. kg is pure Go: no native library, no runtime
+dependency, nothing to keep beside it.
 
 ### Windows
 
 ```powershell
 $ver = (Invoke-RestMethod https://api.github.com/repos/pbleisch/kg/releases/latest).tag_name
-Invoke-WebRequest "https://github.com/pbleisch/kg/releases/download/$ver/kg_${ver}_windows_amd64.zip" `
+Invoke-WebRequest "https://github.com/pbleisch/kg/releases/download/$ver/kg_$($ver.TrimStart('v'))_windows_amd64.zip" `
   -OutFile kg.zip
 Expand-Archive kg.zip . -Force; Remove-Item kg.zip
 # Move kg.exe somewhere on your PATH
